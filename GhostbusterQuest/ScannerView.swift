@@ -32,27 +32,12 @@ struct ScannerView: View {
             if let ghost = targetGhost, let user = locationProvider.lastLocation {
                 let distance = user.distance(to: ghost.currentLocation)
 
-                GeometryReader { geo in
-                    let size = min(geo.size.width, geo.size.height)
-                    let radiusPx = size / 2
-                    let scale = radiusPx / radarRangeMeters
-                    let vector = offsetVector(from: user, to: ghost.currentLocation, scale: scale)
-                    let clampedGhost = clamp(vector: vector, maxRadius: radiusPx * 0.96)
-
-                    ZStack {
-                        RadarView(
-                            user: user,
-                            ghost: ghost,
-                            maxRange: radarRangeMeters,
-                            waveDuration: waveDuration
-                        )
-                        GhostSpriteView()
-                            .frame(width: 50, height: 50)
-                            .opacity(distance <= radarRangeMeters ? 0.9 : 0.0)
-                            .scaleEffect(distance <= radarRangeMeters ? 1.0 : 0.75)
-                            .offset(x: clampedGhost.dx - 15, y: clampedGhost.dy)
-                    }
-                }
+                RadarView(
+                    user: user,
+                    ghost: ghost,
+                    maxRange: radarRangeMeters,
+                    waveDuration: waveDuration
+                )
                 .frame(height: 320)
 
                 VStack(spacing: 8) {
@@ -99,40 +84,42 @@ private struct RadarView: View {
     let ghost: Ghost
     let maxRange: Double
     let waveDuration: Double
+    private let spriteSize: CGFloat = 50
 
     var body: some View {
-        GeometryReader { geo in
-            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
-                let time = context.date.timeIntervalSinceReferenceDate
-                let progress = (time.truncatingRemainder(dividingBy: waveDuration)) / waveDuration
-                let size = min(geo.size.width, geo.size.height)
-                let radiusPx = size / 2
-                let scale = radiusPx / maxRange
+        GeometryReader { proxy in
+            let size = min(proxy.size.width, proxy.size.height)
+            let radiusPx = size / 2
+            let scale = radiusPx / maxRange
+            let vector = offsetVector(from: user, to: ghost.currentLocation, scale: scale)
+            let clampedGhost = clamp(vector: vector, maxRadius: radiusPx * 0.96)
+            let waveCenter = waveOrigin(vector: vector, maxRadius: radiusPx)
+            let vectorMeters = hypot(vector.dx, vector.dy) / scale
 
-                let vector = offsetVector(from: user, to: ghost.currentLocation, scale: scale)
-                let waveCenter = waveOrigin(vector: vector, maxRadius: radiusPx)
-                let waveRadius = radiusPx * 1.2 * CGFloat(progress)
+            ZStack {
+                Circle()
+                    .stroke(.blue.opacity(0.8), lineWidth: 2)
 
-                ZStack {
-                    Circle()
-                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [6, 6]))
-                        .foregroundStyle(.blue.opacity(0.2))
-                    Circle()
-                        .stroke(.blue.opacity(0.12), lineWidth: 8)
-                    Circle()
-                        .fill(.blue.opacity(0.06))
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                    let time = context.date.timeIntervalSinceReferenceDate
+                    let progress = (time.truncatingRemainder(dividingBy: waveDuration)) / waveDuration
+                    let waveRadius = radiusPx * 1.2 * CGFloat(progress)
 
                     Circle()
                         .stroke(.blue.opacity(0.28 * (1 - progress)), lineWidth: 3)
                         .frame(width: waveRadius * 2, height: waveRadius * 2)
                         .offset(x: waveCenter.dx, y: waveCenter.dy)
-
-                    Circle()
-                        .fill(Color.white.opacity(0.9))
-                        .frame(width: 10, height: 10)
+                        .frame(width: size, height: size, alignment: .center)
+                        .clipped()
                 }
-                .frame(width: size, height: size)
+
+                GhostSpriteView()
+                    .frame(width: spriteSize, height: spriteSize)
+                    .offset(x: clampedGhost.dx, y: clampedGhost.dy)
+                    .opacity(vectorMeters <= maxRange ? 0.9 : 0.0)
+                    .scaleEffect(vectorMeters <= maxRange ? 1.0 : 0.75)
             }
+            .frame(width: size, height: size)
         }
     }
 

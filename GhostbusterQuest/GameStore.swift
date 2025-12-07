@@ -91,6 +91,12 @@ final class GameStore: ObservableObject {
             games[idx].isActive = games[idx].id == gameID
         }
     }
+
+    func clearActive() {
+        for idx in games.indices {
+            games[idx].isActive = false
+        }
+    }
 }
 
 private extension GameStore {

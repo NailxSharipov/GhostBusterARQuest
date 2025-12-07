@@ -58,6 +58,7 @@ struct ScannerView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                let canFight = distance <= ghost.fightRadius
                 Button {
                     // переход в режим ловли/AR — заглушка
                 } label: {
@@ -65,8 +66,8 @@ struct ScannerView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                .disabled(distance > max(30, ghost.fightRadius))
+                .tint(canFight ? .green : .gray)
+                .disabled(!canFight)
 
                 Spacer()
             } else {
@@ -76,6 +77,14 @@ struct ScannerView: View {
         .padding()
         .navigationTitle("Сканер")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Стоп") {
+                    store.clearActive()
+                }
+                .tint(.red)
+            }
+        }
     }
 }
 

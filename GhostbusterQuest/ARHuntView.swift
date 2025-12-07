@@ -11,7 +11,15 @@ import ARKit
 import Combine
 
 struct ARHuntView: View {
-    @StateObject private var engine = ARHuntEngine()
+    @EnvironmentObject private var store: GameStore
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var engine: ARHuntEngine
+    private let ghostID: UUID?
+
+    init(ghostID: UUID?) {
+        self.ghostID = ghostID
+        _engine = StateObject(wrappedValue: ARHuntEngine())
+    }
 
     var body: some View {
         ZStack {
@@ -25,9 +33,36 @@ struct ARHuntView: View {
                 )
 
             CrosshairView()
+
+            if engine.canCatch {
+                Button {
+                    engine.performCatch {
+                        captureGhostAndExit()
+                    }
+                } label: {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 72, height: 72)
+                        .overlay(
+                            Image(systemName: "sparkles")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                        )
+                        .shadow(color: .green.opacity(0.5), radius: 10)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
         }
         .navigationTitle("AR-пойма")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func captureGhostAndExit() {
+        if let id = ghostID {
+            store.markCaptured(ghostID: id)
+        }
+        dismiss()
     }
 }
 
@@ -73,6 +108,8 @@ final class ARHuntEngine: ObservableObject {
     private var isFiring = false
     private var lastFireTime: CFTimeInterval = 0
     private let fireInterval: CFTimeInterval = 0.02
+    @Published var canCatch = false
+    private var isCaptured = false
 
     private let orbitRadius: Float = 0.9
     private let orbitSpeed: Float = 0.75
@@ -195,11 +232,12 @@ final class ARHuntEngine: ObservableObject {
     }
 
     private func freezeTarget() {
-        guard let target else { return }
+        guard let target, !isCaptured else { return }
         isFrozen = true
         freezePosition = target.position
         target.model?.materials = [frozenMaterial]
         target.scale = [1.12, 1.12, 1.12]
+        canCatch = true
     }
 
     private func updateProjectiles(delta: Float) {
@@ -236,6 +274,43 @@ final class ARHuntEngine: ObservableObject {
             alive.append(projectile)
         }
         projectiles = alive
+    }
+
+    func performCatch(completion: @escaping () -> Void) {
+        guard let target, !isCaptured else {
+            completion()
+            return
+        }
+        isCaptured = true
+        canCatch = false
+        isFiring = false
+
+        let baseTransform = target.transform
+        let scaleUp = Transform(
+            scale: baseTransform.scale * 1.6,
+            rotation: baseTransform.rotation,
+            translation: baseTransform.translation
+        )
+
+        target.move(to: scaleUp, relativeTo: target.parent, duration: 0.22, timingFunction: .easeInOut)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.23) { [weak self, weak target] in
+            guard let self, let target else {
+                completion()
+                return
+            }
+            let camPos = self.arView?.cameraTransform.translation ?? target.position
+            var final = target.transform
+            final.translation = camPos
+            final.scale = [0.05, 0.05, 0.05]
+
+            target.move(to: final, relativeTo: nil, duration: 0.35, timingFunction: .easeIn)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
+                target.removeFromParent()
+                completion()
+            }
+        }
     }
 }
 

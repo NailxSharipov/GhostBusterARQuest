@@ -80,7 +80,7 @@ struct ScannerView: View {
         .navigationTitle("Сканер")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showARPrototype) {
-            ARHuntView()
+            ARHuntView(ghostID: targetGhost?.id)
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {

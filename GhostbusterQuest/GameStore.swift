@@ -92,6 +92,15 @@ final class GameStore: ObservableObject {
         }
     }
 
+    func markCaptured(ghostID: UUID) {
+        for gameIndex in games.indices {
+            if let ghostIndex = games[gameIndex].ghosts.firstIndex(where: { $0.id == ghostID }) {
+                games[gameIndex].ghosts[ghostIndex].state = .captured
+                return
+            }
+        }
+    }
+
     func clearActive() {
         for idx in games.indices {
             games[idx].isActive = false

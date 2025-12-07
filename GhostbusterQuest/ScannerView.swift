@@ -12,6 +12,7 @@ import MapKit
 struct ScannerView: View {
     @EnvironmentObject private var store: GameStore
     @EnvironmentObject private var locationProvider: UserLocationProvider
+    @State private var showARPrototype = false
     private let radarRangeMeters: Double = 100
     private let waveDuration: Double = 3.0
 
@@ -61,9 +62,9 @@ struct ScannerView: View {
 
                 let canFight = distance <= ghost.fightRadius
                 Button {
-                    // переход в режим ловли/AR — заглушка
+                    showARPrototype = true
                 } label: {
-                    Label("Ловить", systemImage: "scope")
+                    Label("Ловить (AR)", systemImage: "scope")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -78,6 +79,9 @@ struct ScannerView: View {
         .padding()
         .navigationTitle("Сканер")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showARPrototype) {
+            ARHuntView()
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Стоп") {

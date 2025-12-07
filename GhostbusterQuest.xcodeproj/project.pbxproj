@@ -256,6 +256,7 @@
 				DEVELOPMENT_TEAM = HPV9E52JPX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Нужна камера, чтобы видеть окружение и призраков в AR.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Нужен доступ к геопозиции, чтобы показывать ближайших призраков на карте и компасе.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -290,6 +291,7 @@
 				DEVELOPMENT_TEAM = HPV9E52JPX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Нужна камера, чтобы видеть окружение и призраков в AR.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Нужен доступ к геопозиции, чтобы показывать ближайших призраков на карте и компасе.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

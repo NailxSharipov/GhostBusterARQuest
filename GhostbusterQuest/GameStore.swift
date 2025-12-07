@@ -12,15 +12,60 @@ import SwiftUI
 
 @MainActor
 final class GameStore: ObservableObject {
-    @Published var games: [Game] = GameStore.makeMock()
+    @Published var games: [Game] = []
+    private var saveCancellable: AnyCancellable?
+    private let fileName = "games.json"
 
-    // TODO: hook up JSON persistence
+    init() {
+        load()
+        observeChanges()
+    }
+
+    // MARK: - Persistence
+
+    private func observeChanges() {
+        saveCancellable = $games
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.save()
+            }
+    }
+
+    private func documentsURL() -> URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+    }
+
+    private func storageURL() -> URL? {
+        documentsURL()?.appendingPathComponent(fileName)
+    }
+
     func save() {
-        // placeholder for disk write
+        guard let url = storageURL() else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(games)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("GameStore save error: \(error)")
+        }
     }
 
     func load() {
-        // placeholder for disk read
+        guard let url = storageURL(),
+              let data = try? Data(contentsOf: url) else {
+            games = GameStore.makeMock()
+            return
+        }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            games = try decoder.decode([Game].self, from: data)
+        } catch {
+            print("GameStore load error: \(error)")
+            games = GameStore.makeMock()
+        }
     }
 
     func addGame() {

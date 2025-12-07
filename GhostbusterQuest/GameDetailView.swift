@@ -12,7 +12,10 @@ import Combine
 struct GameDetailView: View {
     @Binding var game: Game
     @EnvironmentObject private var locationProvider: UserLocationProvider
+    @EnvironmentObject private var store: GameStore
     @State private var mapPosition: MapCameraPosition?
+    @State private var showClearAlert = false
+    @State private var showGhostPicker = false
 
     private var mapRegion: MKCoordinateRegion { regionForContent() }
 
@@ -140,14 +143,51 @@ struct GameDetailView: View {
 
             Section {
                 Button(role: .destructive) {
-                    game.ghosts.removeAll()
-                    game.locationLayout.removeAll()
+                    showClearAlert = true
                 } label: {
                     Label("Очистить игру", systemImage: "trash")
                 }
             }
+
+            Section {
+                if game.isActive {
+                    Label("Игра активна", systemImage: "target")
+                        .foregroundStyle(.green)
+                } else {
+                    Button {
+                        showGhostPicker = true
+                    } label: {
+                        Label("Старт игры", systemImage: "play.fill")
+                    }
+                    .tint(.green)
+                }
+            }
+        }
+        .alert("Очистить игру?", isPresented: $showClearAlert) {
+            Button("Удалить всё", role: .destructive) {
+                game.ghosts.removeAll()
+                game.locationLayout.removeAll()
+            }
+            Button("Отмена", role: .cancel) { }
+        } message: {
+            Text("Будут удалены все окружности и призраки этого сценария.")
+        }
+        .confirmationDialog("Выберите призрака для охоты", isPresented: $showGhostPicker) {
+            ForEach(game.ghosts) { ghost in
+                Button(ghost.name) {
+                    startHunt(with: ghost.id)
+                }
+            }
+            Button("Отмена", role: .cancel) { }
         }
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func startHunt(with ghostID: UUID) {
+        store.setActive(gameID: game.id)
+        for idx in game.ghosts.indices {
+            game.ghosts[idx].state = game.ghosts[idx].id == ghostID ? .active : .idle
+        }
     }
 
     private func addZone() {

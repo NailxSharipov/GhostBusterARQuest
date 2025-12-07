@@ -12,11 +12,13 @@ struct GhostDetailView: View {
     @Binding var ghost: Ghost
     var onDelete: () -> Void
     @EnvironmentObject private var store: GameStore
+    @Environment(\.dismiss) private var dismiss
 
     private let mainRange: ClosedRange<Double> = 100...200
     private let fightRange: ClosedRange<Double> = 10...30
     private let trapRange: ClosedRange<Double> = 5...10
     private let escapeRange: ClosedRange<Double> = 30...50
+    @State private var showDeleteAlert = false
 
     private var mapRegion: MKCoordinateRegion {
         MKCoordinateRegion(center: ghost.currentLocation, span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
@@ -82,13 +84,24 @@ struct GhostDetailView: View {
             }
 
             Section {
-                Button(role: .destructive, action: onDelete) {
+                Button(role: .destructive) {
+                    showDeleteAlert = true
+                } label: {
                     Label("Удалить призрака", systemImage: "trash")
                 }
             }
         }
         .navigationTitle(ghost.name.isEmpty ? "Призрак" : ghost.name)
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Удалить призрака?", isPresented: $showDeleteAlert) {
+            Button("Удалить", role: .destructive) {
+                onDelete()
+                dismiss()
+            }
+            Button("Отмена", role: .cancel) { }
+        } message: {
+            Text("Этот призрак будет удалён из игры.")
+        }
     }
 
     private func legendRow(color: Color, title: String, value: Int, suffix: String) -> some View {

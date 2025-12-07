@@ -11,6 +11,7 @@ import Combine
 
 final class UserLocationProvider: NSObject, ObservableObject {
     @Published var lastLocation: CLLocationCoordinate2D?
+    @Published var heading: CLHeading?
 
     private let manager = CLLocationManager()
 
@@ -27,6 +28,7 @@ final class UserLocationProvider: NSObject, ObservableObject {
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
             manager.startUpdatingLocation()
+            manager.startUpdatingHeading()
         default:
             break
         }
@@ -38,6 +40,7 @@ extension UserLocationProvider: CLLocationManagerDelegate {
         switch manager.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
             manager.startUpdatingLocation()
+            manager.startUpdatingHeading()
         default:
             break
         }
@@ -47,5 +50,9 @@ extension UserLocationProvider: CLLocationManagerDelegate {
         if let location = locations.last {
             lastLocation = location.coordinate
         }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        heading = newHeading
     }
 }

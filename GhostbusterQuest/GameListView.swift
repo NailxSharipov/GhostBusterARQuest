@@ -11,11 +11,13 @@ import MapKit
 enum GameNavigation: Hashable {
     case game(UUID)
     case ghost(UUID)
+    case scanner
 }
 
 struct GameListView: View {
     @EnvironmentObject private var store: GameStore
     @State private var path: [GameNavigation] = []
+    @State private var gameToDelete: UUID?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -26,7 +28,7 @@ struct GameListView: View {
                     }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            delete(gameID: game.id)
+                            gameToDelete = game.id
                         } label: {
                             Label("Удалить", systemImage: "trash")
                         }
@@ -51,6 +53,32 @@ struct GameListView: View {
                         Label("Новая игра", systemImage: "plus")
                     }
                 }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if store.games.contains(where: { $0.isActive }) {
+                        Button {
+                            path.append(.scanner)
+                        } label: {
+                            Label("Сканер", systemImage: "location.north.line")
+                        }
+                    }
+                }
+            }
+            .alert("Удалить игру?", isPresented: Binding(get: {
+                gameToDelete != nil
+            }, set: { newValue in
+                if !newValue { gameToDelete = nil }
+            })) {
+                Button("Удалить", role: .destructive) {
+                    if let id = gameToDelete {
+                        delete(gameID: id)
+                    }
+                    gameToDelete = nil
+                }
+                Button("Отмена", role: .cancel) {
+                    gameToDelete = nil
+                }
+            } message: {
+                Text("Все зоны и призраки будут удалены из сценария.")
             }
             .navigationDestination(for: GameNavigation.self) { destination in
                 switch destination {
@@ -69,6 +97,8 @@ struct GameListView: View {
                     } else {
                         Text("Призрак не найден")
                     }
+                case .scanner:
+                    ScannerView()
                 }
             }
         }

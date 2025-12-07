@@ -113,11 +113,23 @@ private struct RadarView: View {
                         .clipped()
                 }
 
-                GhostSpriteView()
-                    .frame(width: spriteSize, height: spriteSize)
-                    .offset(x: clampedGhost.dx, y: clampedGhost.dy)
-                    .opacity(vectorMeters <= maxRange ? 0.9 : 0.0)
-                    .scaleEffect(vectorMeters <= maxRange ? 1.0 : 0.75)
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                    let time = context.date.timeIntervalSinceReferenceDate
+                    let phase = time * 0.25
+                    let wobbleX = sin(phase) * 6 + sin(2 * phase) * 12
+                    let wobbleY = cos(phase) * 6 - cos(2 * phase) * 12
+                    let dirX = 6 * cos(phase) + 24 * cos(2 * phase)
+                    let dirY = -6 * sin(phase) + 24 * sin(2 * phase)
+                    let rotation = Angle(radians: atan2(dirY, dirX))
+
+                    GhostSpriteView(tint: vectorMeters <= maxRange ? .green : .white)
+                        .frame(width: spriteSize, height: spriteSize)
+                        .rotationEffect(rotation)
+                        .offset(x: clampedGhost.dx + wobbleX, y: clampedGhost.dy + wobbleY)
+                        .opacity(vectorMeters <= maxRange ? 0.9 : 0.0)
+                        .scaleEffect(vectorMeters <= maxRange ? 1.0 : 0.75)
+                        .frame(width: size, height: size, alignment: .center)
+                }
             }
             .frame(width: size, height: size)
         }

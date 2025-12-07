@@ -10,6 +10,7 @@ import CoreGraphics
 
 struct GhostSpriteView: View {
     @State private var mouthOpen = false
+    var tint: Color = .white
 
     private let bodyPath = """
     m 244.59599,693.47395 c -1.0177,-65.06198 51.60877,-120.62193 63.48136,-184.59958 15.05067,-81.10342 -32.72014,-176.05643 8.8462,-247.30617 31.37882,-53.78709 96.96059,-97.76113 159.23158,-97.69558 63.50634,0.0668 130.50662,44.93145 162.18032,99.9754 37.80685,65.70244 -2.82092,152.03352 5.89747,227.33397 10.21457,88.22281 117.50815,198.65984 54.13348,260.87925 -26.86783,26.37804 -73.448,-33.34439 -110.15942,-24.98064 -40.10245,9.13629 -55.63088,73.55924 -96.63928,76.72 -47.60813,3.66946 -76.76636,-70.78429 -124.51568,-70.82253 -33.89262,-0.0271 -56.58225,61.63463 -88.462,50.12847 -30.05636,-10.84808 -33.49428,-57.68236 -33.99403,-89.63259 z
@@ -18,10 +19,11 @@ struct GhostSpriteView: View {
     var body: some View {
         GeometryReader { geo in
             let scale = min(geo.size.width, geo.size.height) / 1024
+            let pulseScale: CGFloat = mouthOpen ? 1.15 : 1.0
 
             ZStack {
                 GhostBodyShape(svgPath: bodyPath)
-                    .fill(Color.white.opacity(0.95))
+                    .fill(tint.opacity(0.95))
                 .overlay(
                         GhostBodyShape(svgPath: bodyPath)
                             .stroke(Color.black, lineWidth: 38.3335 * scale)
@@ -35,6 +37,8 @@ struct GhostSpriteView: View {
                 MouthView(center: CGPoint(x: 464.97693, y: 459.96613), rx: 45.260113, ry: 57.275669, scale: scale, open: mouthOpen)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .scaleEffect(pulseScale)
+            .animation(.easeInOut(duration: 0.3), value: mouthOpen)
             .onAppear {
                 Task {
                     await animateMouth()

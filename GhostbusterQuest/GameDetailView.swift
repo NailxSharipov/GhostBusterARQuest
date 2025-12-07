@@ -88,6 +88,7 @@ struct GameDetailView: View {
                 }
                 ForEach(Array(game.locationLayout.indices), id: \.self) { index in
                     let zone = $game.locationLayout[index]
+                    let zoneColor = ZoneStyling.color(for: zone.wrappedValue.id, in: game.locationLayout)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Зона \(zone.wrappedValue.id.uuidString.prefix(4))")
                             .font(.subheadline)
@@ -101,6 +102,12 @@ struct GameDetailView: View {
                         Text("Радиус: \(Int(zone.wrappedValue.radiusMeters)) м")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        HStack {
+                            Spacer()
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(zoneColor)
+                                .frame(width: 20, height: 12)
+                        }
                     }
                     .padding(.vertical, 4)
                 }

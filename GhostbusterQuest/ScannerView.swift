@@ -35,6 +35,7 @@ struct ScannerView: View {
                 RadarView(
                     user: user,
                     ghost: ghost,
+                    heading: locationProvider.heading,
                     maxRange: radarRangeMeters,
                     waveDuration: waveDuration
                 )
@@ -91,6 +92,7 @@ struct ScannerView: View {
 private struct RadarView: View {
     let user: CLLocationCoordinate2D
     let ghost: Ghost
+    let heading: CLHeading?
     let maxRange: Double
     let waveDuration: Double
     private let spriteSize: CGFloat = 50
@@ -100,7 +102,12 @@ private struct RadarView: View {
             let size = min(proxy.size.width, proxy.size.height)
             let radiusPx = size / 2
             let scale = radiusPx / maxRange
-            let vector = offsetVector(from: user, to: ghost.currentLocation, scale: scale)
+            let vector = offsetVector(
+                from: user,
+                to: ghost.currentLocation,
+                heading: heading,
+                scale: scale
+            )
             let clampedGhost = clamp(vector: vector, maxRadius: radiusPx * 0.96)
             let waveCenter = waveOrigin(vector: vector, maxRadius: radiusPx)
             let vectorMeters = hypot(vector.dx, vector.dy) / scale
@@ -112,10 +119,10 @@ private struct RadarView: View {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
                     let time = context.date.timeIntervalSinceReferenceDate
                     let progress = (time.truncatingRemainder(dividingBy: waveDuration)) / waveDuration
-                    let waveRadius = radiusPx * 1.2 * CGFloat(progress)
+                    let waveRadius = radiusPx * 2 * CGFloat(progress)
 
                     Circle()
-                        .stroke(.blue.opacity(0.28 * (1 - progress)), lineWidth: 3)
+                        .stroke(.blue.opacity(0.5 * (1 - 0.8 * progress)), lineWidth: 3)
                         .frame(width: waveRadius * 2, height: waveRadius * 2)
                         .offset(x: waveCenter.dx, y: waveCenter.dy)
                         .frame(width: size, height: size, alignment: .center)
@@ -162,13 +169,30 @@ private extension CLLocationCoordinate2D {
     }
 }
 
-private func offsetVector(from user: CLLocationCoordinate2D, to target: CLLocationCoordinate2D, scale: CGFloat) -> (dx: CGFloat, dy: CGFloat) {
+private func offsetVector(
+    from user: CLLocationCoordinate2D,
+    to target: CLLocationCoordinate2D,
+    heading: CLHeading?,
+    scale: CGFloat
+) -> (dx: CGFloat, dy: CGFloat) {
+    let distanceMeters = user.distance(to: target)
+
+    if let heading {
+        let headingDegrees = heading.trueHeading >= 0 ? heading.trueHeading : heading.magneticHeading
+        let bearingDegrees = bearing(from: user, to: target)
+        let relative = (bearingDegrees - headingDegrees).wrappedDegrees
+        let radians = relative * .pi / 180
+        let dx = sin(radians) * distanceMeters
+        let dy = -cos(radians) * distanceMeters // вверх = направление взгляда
+        return (dx: CGFloat(dx) * scale, dy: CGFloat(dy) * scale)
+    }
+
+    // fallback: север вверх
     let userPoint = MKMapPoint(user)
     let targetPoint = MKMapPoint(target)
     let metersPerPoint = 1 / MKMapPointsPerMeterAtLatitude(user.latitude)
     let dxMeters = (targetPoint.x - userPoint.x) * metersPerPoint
     let dyMeters = (targetPoint.y - userPoint.y) * metersPerPoint
-    // инвертируем y, чтобы север был вверх
     return (dx: CGFloat(dxMeters) * scale, dy: CGFloat(-dyMeters) * scale)
 }
 
@@ -177,4 +201,27 @@ private func clamp(vector: (dx: CGFloat, dy: CGFloat), maxRadius: CGFloat) -> (d
     guard length > maxRadius else { return vector }
     let ratio = maxRadius / length
     return (dx: vector.dx * ratio, dy: vector.dy * ratio)
+}
+
+private func bearing(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
+    let lat1 = start.latitude.radians
+    let lon1 = start.longitude.radians
+    let lat2 = end.latitude.radians
+    let lon2 = end.longitude.radians
+
+    let dLon = lon2 - lon1
+    let y = sin(dLon) * cos(lat2)
+    let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+    let bearing = atan2(y, x)
+    return bearing.degrees
+}
+
+private extension Double {
+    var radians: Double { self * .pi / 180 }
+    var degrees: Double { self * 180 / .pi }
+
+    var wrappedDegrees: Double {
+        let normalized = truncatingRemainder(dividingBy: 360)
+        return normalized < 0 ? normalized + 360 : normalized
+    }
 }

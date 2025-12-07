@@ -17,26 +17,14 @@ struct ARHuntView: View {
         ZStack {
             ARHuntContainer(engine: engine)
                 .ignoresSafeArea()
-                .onTapGesture {
-                    engine.shootLaser()
-                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in engine.startFiring() }
+                        .onEnded { _ in engine.stopFiring() }
+                )
 
             CrosshairView()
-
-            VStack {
-                Spacer()
-                Button {
-                    engine.shootLaser()
-                } label: {
-                    Label("Выстрелить", systemImage: "bolt.fill")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.cyan)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 32)
-            }
         }
         .navigationTitle("AR-пойма")
         .navigationBarTitleDisplayMode(.inline)
@@ -70,65 +58,83 @@ final class ARHuntEngine: ObservableObject {
     private let anchor = AnchorEntity(world: .zero)
     private var target: ModelEntity?
     private var displayLink: CADisplayLink?
-    private var collisionSubscription: Cancellable?
     private var time: CFTimeInterval = 0
     private var isFrozen = false
     private var freezePosition: simd_float3?
-    private var defaultMaterial: Material = SimpleMaterial(color: .cyan, isMetallic: true)
-    private var frozenMaterial: Material = SimpleMaterial(color: .red, isMetallic: true)
+    private var defaultMaterial: RealityKit.Material = SimpleMaterial(color: .cyan, isMetallic: true)
+    private var frozenMaterial: RealityKit.Material = SimpleMaterial(color: .red, isMetallic: true)
+    private var projectiles: [Projectile] = []
+    private let beamLength: Float = 0.5
+    private let beamRadius: Float = 0.012
+    private let projectileSpeed: Float = 10.0
+    private let projectileSineAmplitude: Float = 0.08
+    private let projectileSineFrequency: Float = 6.0 // Hz
+    private let projectileSpin: Float = 5.0 // rad/sec
+    private var isFiring = false
+    private var lastFireTime: CFTimeInterval = 0
+    private let fireInterval: CFTimeInterval = 0.02
 
     private let orbitRadius: Float = 0.9
     private let orbitSpeed: Float = 0.75
     private let orbitHeight: Float = 0.35
     private let orbitBobAmplitude: Float = 0.08
 
-    private let laserSpeed: Float = 14.0 // м/с — быстро, но не мгновенно
-    private let laserLifetime: TimeInterval = 1.2
-
     func attach(to view: ARView) {
         arView = view
         view.scene.addAnchor(anchor)
         setupTarget()
         startOrbitLoop()
-        subscribeToCollisions()
     }
 
     deinit {
         displayLink?.invalidate()
-        collisionSubscription?.cancel()
     }
 
-    func shootLaser() {
-        guard let arView else { return }
+    func startFiring() {
+        isFiring = true
+    }
 
+    func stopFiring() {
+        isFiring = false
+    }
+
+    private func shootBeam() {
+        guard let arView else { return }
         let transform = arView.cameraTransform
         let forward = transform.forward
-        let origin = transform.translation + forward * 0.2
+        let up = simd_float3(0, 1, 0)
+        var lateral = simd_normalize(simd_cross(forward, up))
+        if simd_length_squared(lateral) < 1e-4 {
+            lateral = simd_normalize(simd_cross(forward, simd_float3(1, 0, 0)))
+        }
+        let rollSign: Float = Bool.random() ? 1 : -1
 
-        let beamLength: Float = 0.4
-        let beamRadius: Float = 0.009
-        let beamSize = SIMD3<Float>(beamRadius * 2, beamLength, beamRadius * 2)
+        let size = SIMD3<Float>(beamRadius * 2, beamLength, beamRadius * 2)
         let beam = ModelEntity(
-            mesh: .generateBox(size: beamSize, cornerRadius: beamRadius * 0.6),
+            mesh: .generateBox(size: size, cornerRadius: beamRadius * 0.5),
             materials: [SimpleMaterial(color: .red, isMetallic: true)]
         )
-
         beam.name = "projectile"
-        beam.orientation = simd_quatf(from: [0, 1, 0], to: forward)
+        let baseOrientation = simd_quatf(from: [0, 1, 0], to: forward)
+        beam.orientation = baseOrientation
+        let origin = transform.translation + forward * 0.25 // push spawn forward so it doesn't overlap the screen
         beam.position = origin + forward * (beamLength * 0.5)
-
-        beam.physicsBody = PhysicsBodyComponent(mode: .kinematic)
-        beam.physicsMotion = PhysicsMotionComponent(linearVelocity: forward * laserSpeed)
         beam.collision = CollisionComponent(
-            shapes: [ShapeResource.generateBox(size: beamSize)],
+            shapes: [ShapeResource.generateBox(size: size)],
             filter: .init(group: .projectile, mask: [.target])
         )
-
         anchor.addChild(beam)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + laserLifetime) { [weak beam] in
-            beam?.removeFromParent()
-        }
+        let projectile = Projectile(
+            entity: beam,
+            origin: origin,
+            forward: forward,
+            lateral: lateral,
+            baseOrientation: baseOrientation,
+            birthTime: time,
+            rollSign: rollSign
+        )
+        projectiles.append(projectile)
     }
 
     private func setupTarget() {
@@ -154,7 +160,14 @@ final class ARHuntEngine: ObservableObject {
 
     @objc private func stepOrbit(link: CADisplayLink) {
         time += link.duration
+        let delta = Float(link.duration)
+        updateProjectiles(delta: delta)
         guard let target else { return }
+
+        if isFiring, time - lastFireTime >= fireInterval {
+            shootBeam()
+            lastFireTime = time
+        }
 
         if isFrozen {
             let base = freezePosition ?? target.position
@@ -181,41 +194,62 @@ final class ARHuntEngine: ObservableObject {
         target.orientation = simd_quatf(angle: Float(time) * 0.4, axis: [0, 1, 0])
     }
 
-    private func subscribeToCollisions() {
-        collisionSubscription = arView?.scene.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            self?.handleCollision(event)
-        }
-    }
-
-    private func handleCollision(_ event: CollisionEvents.Began) {
+    private func freezeTarget() {
         guard let target else { return }
-
-        let entities = [event.entityA, event.entityB]
-        let hitTarget = entities.contains(target)
-        let projectile = entities.first { $0.name == "projectile" }
-
-        guard hitTarget else { return }
-
-        if let projectile {
-            projectile.removeFromParent()
-        }
-
-        flashTarget()
+        isFrozen = true
+        freezePosition = target.position
+        target.model?.materials = [frozenMaterial]
+        target.scale = [1.12, 1.12, 1.12]
     }
 
-    private func flashTarget() {
-        guard let target, var materials = target.model?.materials else { return }
-        let original = materials
-        materials = [SimpleMaterial(color: .yellow, isMetallic: true)]
-        target.model?.materials = materials
+    private func updateProjectiles(delta: Float) {
+        guard let target else { return }
+        var alive: [Projectile] = []
+        let maxDistance: Float = 20
+        let hitThreshold: Float = 0.14
+        for projectile in projectiles {
+            let age = Float(time - projectile.birthTime)
+            let forwardOffset = projectile.forward * projectileSpeed * age
+            let sinePhase = sin(age * .pi * 2 * projectileSineFrequency)
+            let sineRamp = min(1, max(0, age * 5)) // ramp in first ~0.2s to keep spawn centered
+            let sineOffset = projectile.lateral * sinePhase * projectileSineAmplitude * sineRamp
+            projectile.entity.position = projectile.origin + forwardOffset + sineOffset
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            target.model?.materials = original
+            let rollAngle = age * projectileSpin * projectile.rollSign
+            let roll = simd_quatf(angle: rollAngle, axis: projectile.forward)
+            projectile.entity.orientation = roll * projectile.baseOrientation
+
+            let distance = simd_distance(projectile.entity.position, target.position)
+            if !isFrozen && distance <= hitThreshold {
+                projectile.entity.removeFromParent()
+                freezeTarget()
+                continue
+            }
+
+            let tooFar = simd_length(projectile.entity.position) > maxDistance
+            let expired = time - projectile.birthTime > 3.0
+            if tooFar || expired {
+                projectile.entity.removeFromParent()
+                continue
+            }
+
+            alive.append(projectile)
         }
+        projectiles = alive
     }
 }
 
 // MARK: - Helpers
+
+private struct Projectile {
+    var entity: ModelEntity
+    var origin: simd_float3
+    var forward: simd_float3
+    var lateral: simd_float3
+    var baseOrientation: simd_quatf
+    var birthTime: CFTimeInterval
+    var rollSign: Float
+}
 
 private extension Transform {
     var forward: simd_float3 {

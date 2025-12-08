@@ -22,10 +22,12 @@ struct ScannerView: View {
 
     private var targetGhost: Ghost? {
         guard let game = activeGame else { return nil }
-        if let active = game.ghosts.first(where: { $0.state == .active }) {
+        let available = game.ghosts.filter { $0.state != .captured }
+        guard !available.isEmpty else { return nil }
+        if let active = available.first(where: { $0.state == .active }) {
             return active
         }
-        return game.ghosts.first
+        return available.first
     }
 
     var body: some View {

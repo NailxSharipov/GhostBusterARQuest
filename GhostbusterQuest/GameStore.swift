@@ -96,6 +96,7 @@ final class GameStore: ObservableObject {
         for gameIndex in games.indices {
             if let ghostIndex = games[gameIndex].ghosts.firstIndex(where: { $0.id == ghostID }) {
                 games[gameIndex].ghosts[ghostIndex].state = .captured
+                chooseNextTarget(in: gameIndex)
                 return
             }
         }
@@ -109,6 +110,27 @@ final class GameStore: ObservableObject {
 }
 
 private extension GameStore {
+    func chooseNextTarget(in gameIndex: Int) {
+        var assigned = false
+        for idx in games[gameIndex].ghosts.indices {
+            if games[gameIndex].ghosts[idx].state == .captured {
+                continue
+            }
+            if !assigned {
+                games[gameIndex].ghosts[idx].state = .active
+                assigned = true
+            } else if games[gameIndex].ghosts[idx].state == .active {
+                games[gameIndex].ghosts[idx].state = .idle
+            }
+        }
+
+        if !assigned {
+            for idx in games[gameIndex].ghosts.indices where games[gameIndex].ghosts[idx].state == .active {
+                games[gameIndex].ghosts[idx].state = .idle
+            }
+        }
+    }
+
     static func makeMock() -> [Game] {
         let base = CLLocationCoordinate2D(latitude: 55.7558, longitude: 37.6173)
         let circle = CircleZone(center: base, radiusMeters: 120)

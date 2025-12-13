@@ -44,6 +44,13 @@ struct ARHuntView: View {
                         .onEnded { _ in engine.stopFiring() }
                 )
 
+            VStack {
+                GhostHealthBarView(current: engine.ghostHealth, max: engine.ghostMaxHealth)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                Spacer()
+            }
+
             CrosshairView()
 
             if engine.canCatch {
@@ -148,11 +155,18 @@ final class ARHuntEngine: ObservableObject {
     private let projectileHitThreshold: Float = 0.22
     private let projectileSteerStart: Float = 0.18
     private let projectileSteerStrength: Float = 0.85
-    private let projectileAimDotThreshold: Float = 0.995 // ~5.7°
     private var isFiring = false
     private var nextFireTime: CFTimeInterval = 0
     @Published var canCatch = false
+    @Published private(set) var ghostHealth: Int = 300
+    let ghostMaxHealth: Int = 300
     private var isCaptured = false
+    private var hitFlashStart: CFTimeInterval?
+    private let hitFlashDuration: CFTimeInterval = 1.0
+    private var knockbackOffset: simd_float3 = .zero
+    private var knockbackVelocity: simd_float3 = .zero
+    private let knockbackDamping: Float = 8.0
+    private let knockbackSpring: Float = 18.0
 
     private let orbitRadius: Float = 0.9
     private let orbitSpeed: Float = 0.75
@@ -297,8 +311,6 @@ final class ARHuntEngine: ObservableObject {
             colorFrequency: Float.random(in: 2.2...3.4)
         )
         projectiles.append(projectile)
-
-        attemptImmediateHit(cameraTransform: transform)
     }
 
     private func makeGlowingSphere(radius: Float, alpha: CGFloat) -> ModelEntity {
@@ -309,21 +321,6 @@ final class ARHuntEngine: ObservableObject {
             filter: .init(group: .projectile, mask: [.target])
         )
         return entity
-    }
-
-    private func attemptImmediateHit(cameraTransform: Transform) {
-        guard let target, !isFrozen else { return }
-        let cameraPos = cameraTransform.translation
-        let cameraForward = cameraTransform.forward
-        let targetPos = target.position(relativeTo: nil)
-        let toTarget = targetPos - cameraPos
-        let distance = simd_length(toTarget)
-        guard distance > 0.001, distance < 60 else { return }
-        let dir = toTarget / distance
-        let dot = simd_dot(dir, cameraForward)
-        if dot >= projectileAimDotThreshold {
-            freezeTarget()
-        }
     }
 
     private func setupTarget() {
@@ -344,6 +341,7 @@ final class ARHuntEngine: ObservableObject {
         targetBaseScale = sphere.scale
         usingLoadedModel = false
         availableAnimations = []
+        resetCombatState()
 
         updateGhostModel(modelID: nil)
     }
@@ -438,7 +436,19 @@ final class ARHuntEngine: ObservableObject {
         targetBaseScale = entity.scale
         usingLoadedModel = true
         availableAnimations = entity.availableAnimations
+        resetCombatState()
         applyScale()
+    }
+
+    private func resetCombatState() {
+        ghostHealth = ghostMaxHealth
+        canCatch = false
+        isFrozen = false
+        isCaptured = false
+        freezePosition = nil
+        hitFlashStart = nil
+        knockbackOffset = .zero
+        knockbackVelocity = .zero
     }
 
     private func applyScale() {
@@ -514,6 +524,7 @@ final class ARHuntEngine: ObservableObject {
         }
 
         updateProjectiles(delta: delta)
+        updateHitFlashIfNeeded()
 
         if isFrozen {
             let base = freezePosition ?? target.position
@@ -530,20 +541,43 @@ final class ARHuntEngine: ObservableObject {
             return
         }
 
+        updateKnockback(delta: delta)
+
         // Лемниската (восьмёрка) вокруг опорной точки
         let t = Float(time) * orbitSpeed * 1.3
         let x = sin(t) * orbitRadius
         let z = sin(t) * cos(t) * orbitRadius
         let bob = sin(Float(time) * 1.6) * orbitBobAmplitude
 
-        target.position = [x, orbitHeight + bob, z]
+        target.position = [x, orbitHeight + bob, z] + knockbackOffset
         target.orientation = simd_quatf(angle: Float(time) * 0.4, axis: [0, 1, 0])
+    }
+
+    private func updateKnockback(delta: Float) {
+        if simd_length_squared(knockbackOffset) < 1e-8, simd_length_squared(knockbackVelocity) < 1e-8 {
+            knockbackOffset = .zero
+            knockbackVelocity = .zero
+            return
+        }
+
+        knockbackVelocity += (-knockbackOffset * knockbackSpring) * delta
+        knockbackVelocity -= knockbackVelocity * (knockbackDamping * delta)
+        knockbackOffset += knockbackVelocity * delta
+
+        let maxOffset: Float = 3.2
+        let len = simd_length(knockbackOffset)
+        if len > maxOffset, len > 0.0001 {
+            knockbackOffset = (knockbackOffset / len) * maxOffset
+            knockbackVelocity *= 0.35
+        }
     }
 
     private func freezeTarget() {
         guard let target, !isCaptured else { return }
         isFrozen = true
         freezePosition = target.position
+        isFiring = false
+        hitFlashStart = nil
         let didPlayHit = playHitAnimationIfPossible()
         if !didPlayHit, var model = target.model {
             let count = max(model.materials.count, 1)
@@ -552,6 +586,68 @@ final class ARHuntEngine: ObservableObject {
         }
         target.scale = targetBaseScale * 1.12
         canCatch = true
+    }
+
+    private func applyDamage(_ amount: Int) {
+        guard !isCaptured else { return }
+        guard !isFrozen else { return }
+        ghostHealth = max(0, ghostHealth - amount)
+        startHitFlash()
+        if ghostHealth == 0 {
+            freezeTarget()
+        }
+    }
+
+    private func startHitFlash() {
+        hitFlashStart = time
+        updateHitFlashIfNeeded()
+    }
+
+    private func updateHitFlashIfNeeded() {
+        guard let target else { return }
+        guard !isFrozen else { return }
+        guard let start = hitFlashStart else { return }
+        let elapsed = time - start
+        if elapsed >= hitFlashDuration {
+            hitFlashStart = nil
+            restoreTargetMaterialsIfNeeded()
+            return
+        }
+
+        guard let originals = targetOriginalMaterials else { return }
+        let p = Float(elapsed / hitFlashDuration)
+        let w = sin(p * .pi) // 0 -> 1 -> 0
+        let white = UIColor.white
+
+        var blended: [RealityKit.Material] = []
+        blended.reserveCapacity(originals.count)
+        for original in originals {
+            if var m = original as? SimpleMaterial {
+                let base = m.color.tint
+                m.color.tint = lerpColor(base, white, t: w)
+                blended.append(m)
+                continue
+            }
+            if var m = original as? UnlitMaterial {
+                let base = m.color.tint
+                m.color.tint = lerpColor(base, white, t: w)
+                blended.append(m)
+                continue
+            }
+            blended.append(SimpleMaterial(color: white, isMetallic: false))
+        }
+
+        if var model = target.model {
+            model.materials = blended
+            target.model = model
+        }
+    }
+
+    private func restoreTargetMaterialsIfNeeded() {
+        guard let target, let originals = targetOriginalMaterials else { return }
+        guard var model = target.model else { return }
+        model.materials = originals
+        target.model = model
     }
 
     private func updateProjectiles(delta: Float) {
@@ -587,9 +683,10 @@ final class ARHuntEngine: ObservableObject {
             let projectileWorld = position
             let targetWorld = target.position(relativeTo: nil)
             let distance = simd_distance(projectileWorld, targetWorld)
-            if !isFrozen && distance <= projectileHitThreshold {
-                projectile.root.removeFromParent()
-                freezeTarget()
+            if !isCaptured && !isFrozen && distance <= projectileHitThreshold {
+                animateProjectileHit(projectile, at: projectileWorld)
+                applyDamage(10)
+                applyKnockback(from: projectileWorld, to: targetWorld)
                 continue
             }
 
@@ -602,6 +699,29 @@ final class ARHuntEngine: ObservableObject {
             alive.append(projectile)
         }
         projectiles = alive
+    }
+
+    private func applyKnockback(from hitPoint: simd_float3, to targetWorld: simd_float3) {
+        guard !isFrozen, !isCaptured else { return }
+        var dir = targetWorld - hitPoint
+        dir.y = 0
+        if simd_length_squared(dir) < 1e-6 {
+            dir = [Float.random(in: -1...1), 0, Float.random(in: -1...1)]
+        }
+        dir = simd_normalize(dir)
+        let distance = Float.random(in: 1.0...3.0)
+        let speed = min(distance / 0.18, 18) // m/s
+        knockbackVelocity += dir * speed
+    }
+
+    private func animateProjectileHit(_ projectile: Projectile, at hitPoint: simd_float3) {
+        projectile.root.setPosition(hitPoint, relativeTo: nil)
+        let base = projectile.root.transform
+        let pop = Transform(scale: base.scale * 3, rotation: base.rotation, translation: base.translation)
+        projectile.root.move(to: pop, relativeTo: projectile.root.parent, duration: 0.12, timingFunction: .easeOut)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak root = projectile.root] in
+            root?.removeFromParent()
+        }
     }
 
     private func applyGlow(to projectile: Projectile, age: Float) {
@@ -646,6 +766,7 @@ final class ARHuntEngine: ObservableObject {
         isCaptured = true
         canCatch = false
         isFiring = false
+        hitFlashStart = nil
 
         let baseTransform = target.transform
         let scaleUp = Transform(
@@ -703,6 +824,31 @@ private struct ProjectilePalette {
         default:
             return ProjectilePalette(a: UIColor.systemOrange, b: .white)
         }
+    }
+}
+
+private struct GhostHealthBarView: View {
+    let current: Int
+    let max: Int
+
+    var body: some View {
+        let fraction = max > 0 ? Double(current) / Double(max) : 0
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Призрак")
+                    .font(.caption).bold()
+                    .foregroundStyle(.white)
+                Spacer()
+                Text("\(current)/\(max)")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            ProgressView(value: fraction)
+                .tint(.green)
+                .scaleEffect(x: 1, y: 1.8, anchor: .center)
+        }
+        .padding(10)
+        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

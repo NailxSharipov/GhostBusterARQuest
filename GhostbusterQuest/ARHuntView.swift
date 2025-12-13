@@ -32,6 +32,7 @@ struct ARHuntView: View {
                 ghostLocation: ghostLocation,
                 ghostModelID: modelStore.settings.modelID,
                 ghostModelScale: modelStore.settings.scale,
+                ghostHitAnimationID: modelStore.settings.hitAnimationID,
                 userLocation: locationProvider.lastLocation,
                 heading: locationProvider.heading
             )
@@ -92,6 +93,7 @@ private struct ARHuntContainer: UIViewRepresentable {
     let ghostLocation: CLLocationCoordinate2D?
     let ghostModelID: String?
     let ghostModelScale: Double
+    let ghostHitAnimationID: String?
     let userLocation: CLLocationCoordinate2D?
     let heading: CLHeading?
 
@@ -105,13 +107,13 @@ private struct ARHuntContainer: UIViewRepresentable {
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
         engine.attach(to: view)
-        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale)
+        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale, hitAnimationID: ghostHitAnimationID)
         engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
         return view
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
-        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale)
+        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale, hitAnimationID: ghostHitAnimationID)
         engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
     }
 }
@@ -130,6 +132,8 @@ final class ARHuntEngine: ObservableObject {
     private var currentModelScale: Float = 0.12
     private var targetBaseScale: simd_float3 = [1, 1, 1]
     private var usingLoadedModel = false
+    private var currentHitAnimationID: String?
+    private var availableAnimations: [AnimationResource] = []
     private var displayLink: CADisplayLink?
     private var time: CFTimeInterval = 0
     private var isFrozen = false
@@ -175,12 +179,13 @@ final class ARHuntEngine: ObservableObject {
         displayLink?.invalidate()
     }
 
-    func updateGhostModelSettings(modelID: String?, scale: Double) {
+    func updateGhostModelSettings(modelID: String?, scale: Double, hitAnimationID: String?) {
         let newScale = Float(max(0.01, scale))
         if abs(newScale - currentModelScale) > 0.0001 {
             currentModelScale = newScale
             applyScale()
         }
+        currentHitAnimationID = (hitAnimationID?.isEmpty == true) ? nil : hitAnimationID
         updateGhostModel(modelID: modelID)
     }
 
@@ -305,6 +310,7 @@ final class ARHuntEngine: ObservableObject {
         targetOriginalMaterials = sphere.model?.materials
         targetBaseScale = sphere.scale
         usingLoadedModel = false
+        availableAnimations = []
 
         updateGhostModel(modelID: nil)
     }
@@ -398,6 +404,7 @@ final class ARHuntEngine: ObservableObject {
         targetOriginalMaterials = entity.model?.materials
         targetBaseScale = entity.scale
         usingLoadedModel = true
+        availableAnimations = entity.availableAnimations
         applyScale()
     }
 
@@ -406,6 +413,33 @@ final class ARHuntEngine: ObservableObject {
         targetBaseScale = [currentModelScale, currentModelScale, currentModelScale]
         let mult: Float = isFrozen ? 1.12 : 1.0
         target.scale = targetBaseScale * mult
+    }
+
+    private func playHitAnimationIfPossible() -> Bool {
+        guard let target else { return false }
+        guard !availableAnimations.isEmpty else { return false }
+        guard let animation = resolveHitAnimation() else { return false }
+        target.playAnimation(animation, transitionDuration: 0.08, startsPaused: false)
+        return true
+    }
+
+    private func resolveHitAnimation() -> AnimationResource? {
+        if let id = currentHitAnimationID, !id.isEmpty {
+            if id.hasPrefix("index:"),
+               let idx = Int(id.dropFirst("index:".count)),
+               availableAnimations.indices.contains(idx) {
+                return availableAnimations[idx]
+            }
+            if let match = availableAnimations.first(where: { ($0.name ?? "") == id }) {
+                return match
+            }
+        }
+
+        if let auto = availableAnimations.first(where: { ($0.name ?? "").localizedCaseInsensitiveContains("hit") }) {
+            return auto
+        }
+
+        return availableAnimations.first
     }
 
     private static func horizontalForward(from transform: Transform) -> simd_float3 {
@@ -474,7 +508,8 @@ final class ARHuntEngine: ObservableObject {
         guard let target, !isCaptured else { return }
         isFrozen = true
         freezePosition = target.position
-        if var model = target.model {
+        let didPlayHit = playHitAnimationIfPossible()
+        if !didPlayHit, var model = target.model {
             let count = max(model.materials.count, 1)
             model.materials = Array(repeating: frozenMaterial, count: count)
             target.model = model

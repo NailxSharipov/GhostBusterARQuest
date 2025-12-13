@@ -11,8 +11,9 @@ import Combine
 struct GhostModelSettings: Codable, Hashable {
     var modelID: String
     var scale: Double
+    var hitAnimationID: String?
 
-    static let `default` = GhostModelSettings(modelID: "Quaternius.usdc", scale: 0.12)
+    static let `default` = GhostModelSettings(modelID: "Ghost/Quaternius.usdc", scale: 0.12, hitAnimationID: nil)
 }
 
 @MainActor
@@ -92,4 +93,3 @@ final class GhostModelStore: ObservableObject {
         }
     }
 }
-

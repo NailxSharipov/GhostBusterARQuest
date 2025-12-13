@@ -502,17 +502,18 @@ final class ARHuntEngine: ObservableObject {
     @objc private func stepOrbit(link: CADisplayLink) {
         time += link.duration
         let delta = Float(link.duration)
-        updateProjectiles(delta: delta)
         guard let target else { return }
 
-            if isFiring {
-                var spawnsThisFrame = 0
-                while time >= nextFireTime, spawnsThisFrame < 3 {
-                    spawnProjectile()
-                    nextFireTime += CFTimeInterval.random(in: 0.12...0.22)
-                    spawnsThisFrame += 1
-                }
+        if isFiring {
+            var spawnsThisFrame = 0
+            while time >= nextFireTime, spawnsThisFrame < 3 {
+                spawnProjectile()
+                nextFireTime += CFTimeInterval.random(in: 0.12...0.22)
+                spawnsThisFrame += 1
             }
+        }
+
+        updateProjectiles(delta: delta)
 
         if isFrozen {
             let base = freezePosition ?? target.position
@@ -604,9 +605,8 @@ final class ARHuntEngine: ObservableObject {
     }
 
     private func applyGlow(to projectile: Projectile, age: Float) {
-        let fadeIn = min(max(age / 0.06, 0), 1)
         let fadeOut = min(max((projectileLifetime - age) / 0.4, 0), 1)
-        let opacity = fadeIn * fadeOut
+        let opacity = fadeOut
 
         let pulse = 0.5 + 0.5 * sin((age * projectile.colorFrequency * 2 * .pi) + projectile.colorPhase)
         let color = lerpColor(projectile.palette.a, projectile.palette.b, t: pulse)

@@ -141,17 +141,16 @@ final class ARHuntEngine: ObservableObject {
     private var defaultMaterial: RealityKit.Material = SimpleMaterial(color: .cyan, isMetallic: true)
     private var frozenMaterial: RealityKit.Material = SimpleMaterial(color: .red, isMetallic: true)
     private var projectiles: [Projectile] = []
-    private let beamLength: Float = 0.5
-    private let beamRadius: Float = 0.03
-    private let projectileSpeed: Float = 10.0
-    private let projectileSineAmplitude: Float = 0.08
-    private let projectileSineFrequency: Float = 6.0 // Hz
-    private let projectileSpin: Float = 5.0 // rad/sec
-    private let projectileColor = UIColor(red: 1.0, green: 0.62, blue: 0.2, alpha: 1.0)
-    private let projectileFadeDuration: Float = 2.0
+    private let projectileRadius: Float = 0.022
+    private let projectileBaseSpeed: Float = 1.0 // m/s
+    private let projectileLifetime: Float = 7.0
+    private let projectileMaxDistance: Float = 12.0
+    private let projectileHitThreshold: Float = 0.22
+    private let projectileSteerStart: Float = 0.18
+    private let projectileSteerStrength: Float = 0.85
+    private let projectileAimDotThreshold: Float = 0.995 // ~5.7°
     private var isFiring = false
-    private var lastFireTime: CFTimeInterval = 0
-    private let fireInterval: CFTimeInterval = 0.02
+    private var nextFireTime: CFTimeInterval = 0
     @Published var canCatch = false
     private var isCaptured = false
 
@@ -241,9 +240,9 @@ final class ARHuntEngine: ObservableObject {
     func startFiring() {
         guard !isCaptured else { return }
         if !isFiring {
-            lastFireTime = time
             isFiring = true
-            shootBeam()
+            nextFireTime = time
+            spawnProjectile()
         }
     }
 
@@ -251,46 +250,80 @@ final class ARHuntEngine: ObservableObject {
         isFiring = false
     }
 
-    private func shootBeam() {
+    private func spawnProjectile() {
         guard let arView else { return }
         let transform = arView.cameraTransform
         let forward = transform.forward
-        let up = simd_float3(0, 1, 0)
-        var lateral = simd_normalize(simd_cross(forward, up))
-        if simd_length_squared(lateral) < 1e-4 {
-            lateral = simd_normalize(simd_cross(forward, simd_float3(1, 0, 0)))
+        var right = simd_cross(forward, [0, 1, 0])
+        if simd_length_squared(right) < 1e-4 {
+            right = simd_cross(forward, [1, 0, 0])
         }
-        let rollSign: Float = Bool.random() ? 1 : -1
+        right = simd_normalize(right)
+        let up = simd_normalize(simd_cross(right, forward))
 
-        let diameter = beamRadius * 2
-        let material = SimpleMaterial(color: projectileColor.withAlphaComponent(0), isMetallic: false)
-        let beam = ModelEntity(
-            mesh: .generatePlane(width: diameter, depth: diameter),
-            materials: [material]
-        )
-        beam.name = "projectile"
-        let baseOrientation = simd_quatf(from: [0, 1, 0], to: forward)
-        beam.orientation = baseOrientation
-        // Spawn slightly in front of the camera so it doesn't overlap the screen
-        let origin = transform.translation + forward * 0.35
-        beam.position = origin
-        beam.collision = CollisionComponent(
-            shapes: [ShapeResource.generateSphere(radius: beamRadius * 1.1)],
-            filter: .init(group: .projectile, mask: [.target])
-        )
-        anchor.addChild(beam)
+        let spread: Float = 0.12
+        let rx = Float.random(in: -1...1) * spread
+        let ry = Float.random(in: -1...1) * spread * 0.8
+        let direction = simd_normalize(forward + right * rx + up * ry)
+
+        let speed = projectileBaseSpeed * Float.random(in: 0.9...1.12)
+        let velocity = direction * speed
+
+        let spawnJitter: Float = 0.018
+        let origin = transform.translation + forward * 0.28 + right * (Float.random(in: -1...1) * spawnJitter) + up * (Float.random(in: -1...1) * spawnJitter)
+
+        let palette = ProjectilePalette.random()
+        let inner = makeGlowingSphere(radius: projectileRadius, alpha: 0.95)
+        let glow = makeGlowingSphere(radius: projectileRadius * 1.85, alpha: 0.35)
+        inner.name = "projectile.inner"
+        glow.name = "projectile.glow"
+
+        let root = Entity()
+        root.name = "projectile"
+        root.position = origin
+        root.addChild(glow)
+        root.addChild(inner)
+        anchor.addChild(root)
 
         let projectile = Projectile(
-            entity: beam,
-            origin: origin,
-            forward: forward,
-            lateral: lateral,
-            baseOrientation: baseOrientation,
+            root: root,
+            inner: inner,
+            glow: glow,
+            startPosition: origin,
+            velocity: velocity,
             birthTime: time,
-            rollSign: rollSign,
-            baseColor: projectileColor
+            palette: palette,
+            colorPhase: Float.random(in: 0...(2 * .pi)),
+            colorFrequency: Float.random(in: 2.2...3.4)
         )
         projectiles.append(projectile)
+
+        attemptImmediateHit(cameraTransform: transform)
+    }
+
+    private func makeGlowingSphere(radius: Float, alpha: CGFloat) -> ModelEntity {
+        let material = UnlitMaterial(color: UIColor.white.withAlphaComponent(alpha))
+        let entity = ModelEntity(mesh: .generateSphere(radius: radius), materials: [material])
+        entity.collision = CollisionComponent(
+            shapes: [ShapeResource.generateSphere(radius: radius * 1.05)],
+            filter: .init(group: .projectile, mask: [.target])
+        )
+        return entity
+    }
+
+    private func attemptImmediateHit(cameraTransform: Transform) {
+        guard let target, !isFrozen else { return }
+        let cameraPos = cameraTransform.translation
+        let cameraForward = cameraTransform.forward
+        let targetPos = target.position(relativeTo: nil)
+        let toTarget = targetPos - cameraPos
+        let distance = simd_length(toTarget)
+        guard distance > 0.001, distance < 60 else { return }
+        let dir = toTarget / distance
+        let dot = simd_dot(dir, cameraForward)
+        if dot >= projectileAimDotThreshold {
+            freezeTarget()
+        }
     }
 
     private func setupTarget() {
@@ -472,12 +505,14 @@ final class ARHuntEngine: ObservableObject {
         updateProjectiles(delta: delta)
         guard let target else { return }
 
-        if isFiring {
-            while time - lastFireTime >= fireInterval {
-                shootBeam()
-                lastFireTime += fireInterval
+            if isFiring {
+                var spawnsThisFrame = 0
+                while time >= nextFireTime, spawnsThisFrame < 3 {
+                    spawnProjectile()
+                    nextFireTime += CFTimeInterval.random(in: 0.12...0.22)
+                    spawnsThisFrame += 1
+                }
             }
-        }
 
         if isFrozen {
             let base = freezePosition ?? target.position
@@ -521,34 +556,45 @@ final class ARHuntEngine: ObservableObject {
     private func updateProjectiles(delta: Float) {
         guard let target else { return }
         var alive: [Projectile] = []
-        let maxDistance: Float = 20
-        let hitThreshold: Float = 0.2
         for projectile in projectiles {
+            var projectile = projectile
             let age = Float(time - projectile.birthTime)
-            let forwardOffset = projectile.forward * projectileSpeed * age
-            let sinePhase = sin(age * .pi * 2 * projectileSineFrequency)
-            let sineRamp = min(1, max(0, age * 5)) // ramp in first ~0.2s to keep spawn centered
-            let sineOffset = projectile.lateral * sinePhase * projectileSineAmplitude * sineRamp
-            projectile.entity.setPosition(projectile.origin + forwardOffset + sineOffset, relativeTo: nil)
+            if age > projectileLifetime {
+                projectile.root.removeFromParent()
+                continue
+            }
 
-            let rollAngle = age * projectileSpin * projectile.rollSign
-            let roll = simd_quatf(angle: rollAngle, axis: projectile.forward)
-            projectile.entity.orientation = roll * projectile.baseOrientation
-            applyFade(to: projectile, age: age)
+            var position = projectile.root.position(relativeTo: nil)
+            if age >= projectileSteerStart, !isFrozen {
+                let targetWorld = target.position(relativeTo: nil)
+                let toTarget = targetWorld - position
+                if simd_length_squared(toTarget) > 1e-6 {
+                    let desiredDir = simd_normalize(toTarget)
+                    let speed = simd_length(projectile.velocity)
+                    let currentDir = simd_normalize(projectile.velocity)
+                    let t = min(max(projectileSteerStrength * delta, 0), 0.08)
+                    let newDir = simd_normalize(currentDir + (desiredDir - currentDir) * t)
+                    projectile.velocity = newDir * speed
+                }
+            }
 
-            let projectileWorld = projectile.entity.position(relativeTo: nil)
+            position += projectile.velocity * delta
+            projectile.root.setPosition(position, relativeTo: nil)
+
+            applyGlow(to: projectile, age: age)
+
+            let projectileWorld = position
             let targetWorld = target.position(relativeTo: nil)
             let distance = simd_distance(projectileWorld, targetWorld)
-            if !isFrozen && distance <= hitThreshold {
-                projectile.entity.removeFromParent()
+            if !isFrozen && distance <= projectileHitThreshold {
+                projectile.root.removeFromParent()
                 freezeTarget()
                 continue
             }
 
-            let tooFar = simd_distance(projectileWorld, projectile.origin) > maxDistance
-            let expired = time - projectile.birthTime > 3.0
-            if tooFar || expired {
-                projectile.entity.removeFromParent()
+            let tooFar = simd_distance(projectileWorld, projectile.startPosition) > projectileMaxDistance
+            if tooFar {
+                projectile.root.removeFromParent()
                 continue
             }
 
@@ -557,14 +603,39 @@ final class ARHuntEngine: ObservableObject {
         projectiles = alive
     }
 
-    private func applyFade(to projectile: Projectile, age: Float) {
-        guard var model = projectile.entity.model else { return }
-        let t = min(max(age / projectileFadeDuration, 0), 1)
-        if var material = model.materials.first as? SimpleMaterial {
-            material.color.tint = projectile.baseColor.withAlphaComponent(CGFloat(t))
-            model.materials = [material]
-            projectile.entity.model = model
-        }
+    private func applyGlow(to projectile: Projectile, age: Float) {
+        let fadeIn = min(max(age / 0.06, 0), 1)
+        let fadeOut = min(max((projectileLifetime - age) / 0.4, 0), 1)
+        let opacity = fadeIn * fadeOut
+
+        let pulse = 0.5 + 0.5 * sin((age * projectile.colorFrequency * 2 * .pi) + projectile.colorPhase)
+        let color = lerpColor(projectile.palette.a, projectile.palette.b, t: pulse)
+
+        setTint(on: projectile.inner, color: color.withAlphaComponent(CGFloat(0.95 * opacity)))
+        setTint(on: projectile.glow, color: color.withAlphaComponent(CGFloat(0.38 * opacity)))
+    }
+
+    private func setTint(on entity: ModelEntity, color: UIColor) {
+        guard var model = entity.model else { return }
+        guard var material = model.materials.first as? UnlitMaterial else { return }
+        material.color.tint = color
+        model.materials = [material]
+        entity.model = model
+    }
+
+    private func lerpColor(_ a: UIColor, _ b: UIColor, t: Float) -> UIColor {
+        var ar: CGFloat = 0, ag: CGFloat = 0, ab: CGFloat = 0, aa: CGFloat = 0
+        var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+        a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa)
+        b.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+
+        let tt = CGFloat(min(max(t, 0), 1))
+        return UIColor(
+            red: ar + (br - ar) * tt,
+            green: ag + (bg - ag) * tt,
+            blue: ab + (bb - ab) * tt,
+            alpha: aa + (ba - aa) * tt
+        )
     }
 
     func performCatch(completion: @escaping () -> Void) {
@@ -608,14 +679,31 @@ final class ARHuntEngine: ObservableObject {
 // MARK: - Helpers
 
 private struct Projectile {
-    var entity: ModelEntity
-    var origin: simd_float3
-    var forward: simd_float3
-    var lateral: simd_float3
-    var baseOrientation: simd_quatf
+    var root: Entity
+    var inner: ModelEntity
+    var glow: ModelEntity
+    var startPosition: simd_float3
+    var velocity: simd_float3
     var birthTime: CFTimeInterval
-    var rollSign: Float
-    var baseColor: UIColor
+    var palette: ProjectilePalette
+    var colorPhase: Float
+    var colorFrequency: Float
+}
+
+private struct ProjectilePalette {
+    var a: UIColor
+    var b: UIColor
+
+    static func random() -> ProjectilePalette {
+        switch Int.random(in: 0..<3) {
+        case 0:
+            return ProjectilePalette(a: .white, b: UIColor(red: 0.55, green: 0.9, blue: 1.0, alpha: 1))
+        case 1:
+            return ProjectilePalette(a: UIColor.systemYellow, b: .white)
+        default:
+            return ProjectilePalette(a: UIColor.systemOrange, b: .white)
+        }
+    }
 }
 
 private extension Transform {

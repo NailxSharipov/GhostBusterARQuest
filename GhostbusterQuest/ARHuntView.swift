@@ -9,9 +9,12 @@ import SwiftUI
 import RealityKit
 import ARKit
 import Combine
+import UIKit
+import CoreLocation
 
 struct ARHuntView: View {
     @EnvironmentObject private var store: GameStore
+    @EnvironmentObject private var locationProvider: UserLocationProvider
     @Environment(\.dismiss) private var dismiss
     @StateObject private var engine: ARHuntEngine
     private let ghostID: UUID?
@@ -23,7 +26,13 @@ struct ARHuntView: View {
 
     var body: some View {
         ZStack {
-            ARHuntContainer(engine: engine)
+            ARHuntContainer(
+                engine: engine,
+                ghostLocation: ghostLocation,
+                ghostModelID: ghostModelID,
+                userLocation: locationProvider.lastLocation,
+                heading: locationProvider.heading
+            )
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .gesture(
@@ -58,6 +67,26 @@ struct ARHuntView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    private var ghostLocation: CLLocationCoordinate2D? {
+        guard let ghostID else { return nil }
+        for game in store.games {
+            if let ghost = game.ghosts.first(where: { $0.id == ghostID }) {
+                return ghost.currentLocation
+            }
+        }
+        return nil
+    }
+
+    private var ghostModelID: String? {
+        guard let ghostID else { return nil }
+        for game in store.games {
+            if let ghost = game.ghosts.first(where: { $0.id == ghostID }) {
+                return ghost.modelID
+            }
+        }
+        return nil
+    }
+
     private func captureGhostAndExit() {
         if let id = ghostID {
             store.markCaptured(ghostID: id)
@@ -68,6 +97,10 @@ struct ARHuntView: View {
 
 private struct ARHuntContainer: UIViewRepresentable {
     @ObservedObject var engine: ARHuntEngine
+    let ghostLocation: CLLocationCoordinate2D?
+    let ghostModelID: String?
+    let userLocation: CLLocationCoordinate2D?
+    let heading: CLHeading?
 
     func makeUIView(context: Context) -> ARView {
         let view = ARView(frame: .zero)
@@ -79,10 +112,15 @@ private struct ARHuntContainer: UIViewRepresentable {
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
         engine.attach(to: view)
+        engine.updateGhostModel(modelID: ghostModelID)
+        engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
         return view
     }
 
-    func updateUIView(_ uiView: ARView, context: Context) {}
+    func updateUIView(_ uiView: ARView, context: Context) {
+        engine.updateGhostModel(modelID: ghostModelID)
+        engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
+    }
 }
 
 // MARK: - Engine
@@ -91,7 +129,11 @@ private struct ARHuntContainer: UIViewRepresentable {
 final class ARHuntEngine: ObservableObject {
     private weak var arView: ARView?
     private let anchor = AnchorEntity(world: .zero)
+    private let ghostRoot = Entity()
     private var target: ModelEntity?
+    private var modelLoadCancellable: AnyCancellable?
+    private var targetOriginalMaterials: [RealityKit.Material]?
+    private var loadedModelKey: String?
     private var displayLink: CADisplayLink?
     private var time: CFTimeInterval = 0
     private var isFrozen = false
@@ -100,11 +142,13 @@ final class ARHuntEngine: ObservableObject {
     private var frozenMaterial: RealityKit.Material = SimpleMaterial(color: .red, isMetallic: true)
     private var projectiles: [Projectile] = []
     private let beamLength: Float = 0.5
-    private let beamRadius: Float = 0.012
+    private let beamRadius: Float = 0.03
     private let projectileSpeed: Float = 10.0
     private let projectileSineAmplitude: Float = 0.08
     private let projectileSineFrequency: Float = 6.0 // Hz
     private let projectileSpin: Float = 5.0 // rad/sec
+    private let projectileColor = UIColor(red: 1.0, green: 0.62, blue: 0.2, alpha: 1.0)
+    private let projectileFadeDuration: Float = 2.0
     private var isFiring = false
     private var lastFireTime: CFTimeInterval = 0
     private let fireInterval: CFTimeInterval = 0.02
@@ -116,9 +160,17 @@ final class ARHuntEngine: ObservableObject {
     private let orbitHeight: Float = 0.35
     private let orbitBobAmplitude: Float = 0.08
 
+    private var originGeo: CLLocationCoordinate2D?
+    private var originWorldPosition: simd_float3?
+    private var originForwardWorld: simd_float3?
+    private var originHeadingDegrees: Double?
+    private var originNorthWorld: simd_float3?
+    private var originEastWorld: simd_float3?
+
     func attach(to view: ARView) {
         arView = view
         view.scene.addAnchor(anchor)
+        anchor.addChild(ghostRoot)
         setupTarget()
         startOrbitLoop()
     }
@@ -127,8 +179,62 @@ final class ARHuntEngine: ObservableObject {
         displayLink?.invalidate()
     }
 
+    func updateGhostModel(modelID: String?) {
+        let key = ARHuntEngine.normalizedModelKey(modelID)
+        guard loadedModelKey != key else { return }
+        loadedModelKey = key
+        loadGhostModel(modelID: modelID)
+    }
+
+    func updateGhostPlacement(
+        ghostLocation: CLLocationCoordinate2D?,
+        userLocation: CLLocationCoordinate2D?,
+        heading: CLHeading?
+    ) {
+        guard let ghostLocation else { return }
+        guard let arView else { return }
+
+        if originGeo == nil, let userLocation {
+            originGeo = userLocation
+            originWorldPosition = arView.cameraTransform.translation
+
+            let forward = ARHuntEngine.horizontalForward(from: arView.cameraTransform)
+            originForwardWorld = forward
+            originHeadingDegrees = heading?.resolvedHeadingDegrees
+        }
+
+        if originGeo != nil, originHeadingDegrees == nil, let headingDegrees = heading?.resolvedHeadingDegrees {
+            originHeadingDegrees = headingDegrees
+        }
+
+        guard let originGeo, let originWorldPosition else { return }
+
+        let forward = originForwardWorld ?? ARHuntEngine.horizontalForward(from: arView.cameraTransform)
+        let headingDegrees = originHeadingDegrees
+
+        let northWorld: simd_float3
+        if let headingDegrees {
+            let rotation = simd_quatf(angle: Float(-headingDegrees * .pi / 180), axis: [0, 1, 0])
+            northWorld = simd_normalize(rotation.act(forward))
+        } else {
+            northWorld = forward
+        }
+        let eastWorld = simd_normalize(simd_cross(northWorld, [0, 1, 0]))
+        originNorthWorld = northWorld
+        originEastWorld = eastWorld
+
+        let (eastMeters, northMeters) = ARHuntEngine.eastNorthMeters(from: originGeo, to: ghostLocation)
+        let offset = eastWorld * Float(eastMeters) + northWorld * Float(northMeters)
+        ghostRoot.position = originWorldPosition + offset
+    }
+
     func startFiring() {
-        isFiring = true
+        guard !isCaptured else { return }
+        if !isFiring {
+            lastFireTime = time
+            isFiring = true
+            shootBeam()
+        }
     }
 
     func stopFiring() {
@@ -146,18 +252,20 @@ final class ARHuntEngine: ObservableObject {
         }
         let rollSign: Float = Bool.random() ? 1 : -1
 
-        let size = SIMD3<Float>(beamRadius * 2, beamLength, beamRadius * 2)
+        let diameter = beamRadius * 2
+        let material = SimpleMaterial(color: projectileColor.withAlphaComponent(0), isMetallic: false)
         let beam = ModelEntity(
-            mesh: .generateBox(size: size, cornerRadius: beamRadius * 0.5),
-            materials: [SimpleMaterial(color: .red, isMetallic: true)]
+            mesh: .generatePlane(width: diameter, depth: diameter),
+            materials: [material]
         )
         beam.name = "projectile"
         let baseOrientation = simd_quatf(from: [0, 1, 0], to: forward)
         beam.orientation = baseOrientation
-        let origin = transform.translation + forward * 0.25 // push spawn forward so it doesn't overlap the screen
-        beam.position = origin + forward * (beamLength * 0.5)
+        // Spawn slightly in front of the camera so it doesn't overlap the screen
+        let origin = transform.translation + forward * 0.35
+        beam.position = origin
         beam.collision = CollisionComponent(
-            shapes: [ShapeResource.generateBox(size: size)],
+            shapes: [ShapeResource.generateSphere(radius: beamRadius * 1.1)],
             filter: .init(group: .projectile, mask: [.target])
         )
         anchor.addChild(beam)
@@ -169,7 +277,8 @@ final class ARHuntEngine: ObservableObject {
             lateral: lateral,
             baseOrientation: baseOrientation,
             birthTime: time,
-            rollSign: rollSign
+            rollSign: rollSign,
+            baseColor: projectileColor
         )
         projectiles.append(projectile)
     }
@@ -186,8 +295,119 @@ final class ARHuntEngine: ObservableObject {
         )
         sphere.physicsBody = PhysicsBodyComponent(mode: .kinematic)
 
-        anchor.addChild(sphere)
+        ghostRoot.addChild(sphere)
         target = sphere
+        targetOriginalMaterials = sphere.model?.materials
+
+        updateGhostModel(modelID: nil)
+    }
+
+    private func loadGhostModel(modelID: String?) {
+        modelLoadCancellable?.cancel()
+        modelLoadCancellable = nil
+
+        guard let url = resolveModelURL(modelID: modelID) else {
+            print("ARHuntEngine: ghost model not found (modelID: \(modelID ?? "nil"))")
+            return
+        }
+
+        modelLoadCancellable = ModelEntity.loadModelAsync(contentsOf: url)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completion in
+                if case .failure(let error) = completion {
+                    print("ARHuntEngine: failed to load ghost model: \(error)")
+                }
+                self?.modelLoadCancellable = nil
+            } receiveValue: { [weak self] entity in
+                self?.installGhostModel(entity)
+            }
+    }
+
+    private static func normalizedModelKey(_ modelID: String?) -> String {
+        let trimmed = (modelID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "model_id" {
+            return "Quaternius.usdc"
+        }
+        return trimmed
+    }
+
+    private func resolveModelURL(modelID: String?) -> URL? {
+        let trimmed = ARHuntEngine.normalizedModelKey(modelID)
+        let normalizedPath = trimmed.replacingOccurrences(of: "\\", with: "/")
+        let parts = normalizedPath.split(separator: "/").map(String.init)
+        let fileName = parts.last ?? normalizedPath
+        let subdirectory = parts.count > 1 ? parts.dropLast().joined(separator: "/") : nil
+
+        let name: String
+        let ext: String?
+        if let dotIndex = fileName.lastIndex(of: ".") {
+            name = String(fileName[..<dotIndex])
+            ext = String(fileName[fileName.index(after: dotIndex)...])
+        } else {
+            name = fileName
+            ext = nil
+        }
+
+        let extensionsToTry = ext.map { [$0] } ?? ["usdc", "usdz"]
+        let subdirsToTry = [subdirectory, "Ghost", nil].compactMap { $0 }
+
+        for fileExt in extensionsToTry {
+            if let subdirectory {
+                if let url = Bundle.main.url(forResource: name, withExtension: fileExt, subdirectory: subdirectory) {
+                    return url
+                }
+            }
+            for subdir in subdirsToTry {
+                if let url = Bundle.main.url(forResource: name, withExtension: fileExt, subdirectory: subdir) {
+                    return url
+                }
+            }
+            if let url = Bundle.main.url(forResource: name, withExtension: fileExt) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private func installGhostModel(_ entity: ModelEntity) {
+        target?.removeFromParent()
+
+        entity.name = "target"
+        entity.position = .zero
+        entity.scale = [0.12, 0.12, 0.12]
+        entity.physicsBody = PhysicsBodyComponent(mode: .kinematic)
+
+        let bounds = entity.visualBounds(relativeTo: entity)
+        let extents = bounds.extents
+        let radius = max(max(extents.x, max(extents.y, extents.z)) * 0.6, 0.08)
+        entity.collision = CollisionComponent(
+            shapes: [ShapeResource.generateSphere(radius: radius)],
+            filter: .init(group: .target, mask: [.projectile])
+        )
+
+        ghostRoot.addChild(entity)
+        target = entity
+        targetOriginalMaterials = entity.model?.materials
+    }
+
+    private static func horizontalForward(from transform: Transform) -> simd_float3 {
+        var forward = transform.forward
+        forward.y = 0
+        if simd_length_squared(forward) < 1e-4 {
+            return simd_float3(0, 0, -1)
+        }
+        return simd_normalize(forward)
+    }
+
+    private static func eastNorthMeters(from origin: CLLocationCoordinate2D, to target: CLLocationCoordinate2D) -> (east: Double, north: Double) {
+        let earthRadius = 6_378_137.0
+        let lat0 = origin.latitude * .pi / 180
+        let dLat = (target.latitude - origin.latitude) * .pi / 180
+        let dLon = (target.longitude - origin.longitude) * .pi / 180
+        let north = dLat * earthRadius
+        let east = dLon * earthRadius * cos(lat0)
+        return (east: east, north: north)
     }
 
     private func startOrbitLoop() {
@@ -201,9 +421,11 @@ final class ARHuntEngine: ObservableObject {
         updateProjectiles(delta: delta)
         guard let target else { return }
 
-        if isFiring, time - lastFireTime >= fireInterval {
-            shootBeam()
-            lastFireTime = time
+        if isFiring {
+            while time - lastFireTime >= fireInterval {
+                shootBeam()
+                lastFireTime += fireInterval
+            }
         }
 
         if isFrozen {
@@ -235,7 +457,11 @@ final class ARHuntEngine: ObservableObject {
         guard let target, !isCaptured else { return }
         isFrozen = true
         freezePosition = target.position
-        target.model?.materials = [frozenMaterial]
+        if var model = target.model {
+            let count = max(model.materials.count, 1)
+            model.materials = Array(repeating: frozenMaterial, count: count)
+            target.model = model
+        }
         target.scale = [1.12, 1.12, 1.12]
         canCatch = true
     }
@@ -244,27 +470,30 @@ final class ARHuntEngine: ObservableObject {
         guard let target else { return }
         var alive: [Projectile] = []
         let maxDistance: Float = 20
-        let hitThreshold: Float = 0.14
+        let hitThreshold: Float = 0.2
         for projectile in projectiles {
             let age = Float(time - projectile.birthTime)
             let forwardOffset = projectile.forward * projectileSpeed * age
             let sinePhase = sin(age * .pi * 2 * projectileSineFrequency)
             let sineRamp = min(1, max(0, age * 5)) // ramp in first ~0.2s to keep spawn centered
             let sineOffset = projectile.lateral * sinePhase * projectileSineAmplitude * sineRamp
-            projectile.entity.position = projectile.origin + forwardOffset + sineOffset
+            projectile.entity.setPosition(projectile.origin + forwardOffset + sineOffset, relativeTo: nil)
 
             let rollAngle = age * projectileSpin * projectile.rollSign
             let roll = simd_quatf(angle: rollAngle, axis: projectile.forward)
             projectile.entity.orientation = roll * projectile.baseOrientation
+            applyFade(to: projectile, age: age)
 
-            let distance = simd_distance(projectile.entity.position, target.position)
+            let projectileWorld = projectile.entity.position(relativeTo: nil)
+            let targetWorld = target.position(relativeTo: nil)
+            let distance = simd_distance(projectileWorld, targetWorld)
             if !isFrozen && distance <= hitThreshold {
                 projectile.entity.removeFromParent()
                 freezeTarget()
                 continue
             }
 
-            let tooFar = simd_length(projectile.entity.position) > maxDistance
+            let tooFar = simd_distance(projectileWorld, projectile.origin) > maxDistance
             let expired = time - projectile.birthTime > 3.0
             if tooFar || expired {
                 projectile.entity.removeFromParent()
@@ -274,6 +503,16 @@ final class ARHuntEngine: ObservableObject {
             alive.append(projectile)
         }
         projectiles = alive
+    }
+
+    private func applyFade(to projectile: Projectile, age: Float) {
+        guard var model = projectile.entity.model else { return }
+        let t = min(max(age / projectileFadeDuration, 0), 1)
+        if var material = model.materials.first as? SimpleMaterial {
+            material.color.tint = projectile.baseColor.withAlphaComponent(CGFloat(t))
+            model.materials = [material]
+            projectile.entity.model = model
+        }
     }
 
     func performCatch(completion: @escaping () -> Void) {
@@ -294,17 +533,17 @@ final class ARHuntEngine: ObservableObject {
 
         target.move(to: scaleUp, relativeTo: target.parent, duration: 0.22, timingFunction: .easeInOut)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.23) { [weak self, weak target] in
-            guard let self, let target else {
-                completion()
-                return
-            }
-            let camPos = self.arView?.cameraTransform.translation ?? target.position
-            var final = target.transform
-            final.translation = camPos
-            final.scale = [0.05, 0.05, 0.05]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.23) { [weak self, weak target] in
+                guard let self, let target else {
+                    completion()
+                    return
+                }
+                let camPos = self.arView?.cameraTransform.translation ?? target.position(relativeTo: nil)
+                var final = Transform(matrix: target.transformMatrix(relativeTo: nil))
+                final.translation = camPos
+                final.scale = [0.05, 0.05, 0.05]
 
-            target.move(to: final, relativeTo: nil, duration: 0.35, timingFunction: .easeIn)
+                target.move(to: final, relativeTo: nil, duration: 0.35, timingFunction: .easeIn)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
                 target.removeFromParent()
@@ -324,6 +563,7 @@ private struct Projectile {
     var baseOrientation: simd_quatf
     var birthTime: CFTimeInterval
     var rollSign: Float
+    var baseColor: UIColor
 }
 
 private extension Transform {
@@ -331,6 +571,12 @@ private extension Transform {
         let column = matrix.columns.2
         let vector = simd_float3(-column.x, -column.y, -column.z)
         return simd_normalize(vector)
+    }
+}
+
+private extension CLHeading {
+    var resolvedHeadingDegrees: Double {
+        trueHeading >= 0 ? trueHeading : magneticHeading
     }
 }
 

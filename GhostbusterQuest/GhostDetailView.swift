@@ -34,13 +34,6 @@ struct GhostDetailView: View {
             Section("Базовая точка") {
                 MapReader { proxy in
                     Map(initialPosition: .region(mapRegion)) {
-                        let center = ghost.currentLocation
-                        MapCircle(center: center, radius: ghost.mainZoneRadius)
-                            .foregroundStyle(Color.blue.opacity(0.2))
-                            .mapOverlayLevel(level: .aboveRoads)
-                        MapCircle(center: center, radius: ghost.fightRadius)
-                            .foregroundStyle(Color.red.opacity(0.18))
-                            .mapOverlayLevel(level: .aboveRoads)
                         Annotation("", coordinate: ghost.currentLocation) {
                             Circle()
                                 .fill(Color.purple)
@@ -62,11 +55,6 @@ struct GhostDetailView: View {
                 }
                 .frame(height: 200)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                HStack(spacing: 16) {
-                    legendRow(color: .blue, title: "Основная зона", value: Int(ghost.mainZoneRadius), suffix: "м")
-                    legendRow(color: .red, title: "Радиус боя", value: Int(ghost.fightRadius), suffix: "м")
-                }
-                .padding(.top, 6)
                 HStack {
                     Text("Lat \(ghost.baseLatitude, specifier: "%.4f")")
                     Spacer()
@@ -101,17 +89,6 @@ struct GhostDetailView: View {
             Button("Отмена", role: .cancel) { }
         } message: {
             Text("Этот призрак будет удалён из игры.")
-        }
-    }
-
-    private func legendRow(color: Color, title: String, value: Int, suffix: String) -> some View {
-        HStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(color)
-                .frame(width: 16, height: 12)
-            Text("\(title) \(value) \(suffix)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 

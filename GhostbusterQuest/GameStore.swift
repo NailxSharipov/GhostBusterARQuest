@@ -133,9 +133,8 @@ private extension GameStore {
 
     static func makeMock() -> [Game] {
         let base = CLLocationCoordinate2D(latitude: 55.7558, longitude: 37.6173)
-        let circle = CircleZone(center: base, radiusMeters: 120)
         let ghost = Ghost(name: "Полтергейст", modelID: "ghost_01", baseLocation: base)
-        let game = Game(name: "Патриаршие пруды", locationLayout: [circle], ghosts: [ghost], isActive: true)
+        let game = Game(name: "Патриаршие пруды", locationLayout: [], ghosts: [ghost], isActive: true)
         return [game]
     }
 }

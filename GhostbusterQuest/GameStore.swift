@@ -83,7 +83,9 @@ final class GameStore: ObservableObject {
             games[index].ghosts[ghostIndex].state = .idle
             games[index].ghosts[ghostIndex].currentLatitude = games[index].ghosts[ghostIndex].baseLatitude
             games[index].ghosts[ghostIndex].currentLongitude = games[index].ghosts[ghostIndex].baseLongitude
+            games[index].ghosts[ghostIndex].lastEscapeDate = nil
         }
+        chooseNextTarget(in: index)
     }
 
     func setActive(gameID: UUID) {

@@ -18,6 +18,7 @@ struct GameListView: View {
     @EnvironmentObject private var store: GameStore
     @State private var path: [GameNavigation] = []
     @State private var gameToDelete: UUID?
+    @State private var gameToReset: UUID?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -33,13 +34,20 @@ struct GameListView: View {
                             Label("Удалить", systemImage: "trash")
                         }
                     }
-                    .swipeActions(edge: .leading) {
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         Button {
                             store.setActive(gameID: game.id)
                         } label: {
                             Label("Играть", systemImage: "play.fill")
                         }
                         .tint(.green)
+
+                        Button {
+                            gameToReset = game.id
+                        } label: {
+                            Label("Сброс", systemImage: "arrow.counterclockwise")
+                        }
+                        .tint(.orange)
                     }
                 }
                 .onDelete(perform: store.delete)
@@ -54,11 +62,31 @@ struct GameListView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if store.games.contains(where: { $0.isActive }) {
-                        Button {
-                            path.append(.scanner)
+                    if let activeGame = store.games.first(where: { $0.isActive }) {
+                        Menu {
+                            Text(activeGame.name)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                path.append(.scanner)
+                            } label: {
+                                Label("Сканер", systemImage: "location.north.line")
+                            }
+
+                            Button {
+                                gameToReset = activeGame.id
+                            } label: {
+                                Label("Сброс прогресса", systemImage: "arrow.counterclockwise")
+                            }
+
+                            Button(role: .destructive) {
+                                store.clearActive()
+                            } label: {
+                                Label("Очистить активную", systemImage: "xmark.circle")
+                            }
                         } label: {
-                            Label("Сканер", systemImage: "location.north.line")
+                            Label("Охота", systemImage: "target")
                         }
                     }
                 }
@@ -79,6 +107,23 @@ struct GameListView: View {
                 }
             } message: {
                 Text("Все зоны и призраки будут удалены из сценария.")
+            }
+            .alert("Сбросить прогресс?", isPresented: Binding(get: {
+                gameToReset != nil
+            }, set: { newValue in
+                if !newValue { gameToReset = nil }
+            })) {
+                Button("Сбросить", role: .destructive) {
+                    if let id = gameToReset {
+                        store.resetProgress(for: id)
+                    }
+                    gameToReset = nil
+                }
+                Button("Отмена", role: .cancel) {
+                    gameToReset = nil
+                }
+            } message: {
+                Text("Все призраки будут оживлены, и счёт пойманных будет обнулён.")
             }
             .navigationDestination(for: GameNavigation.self) { destination in
                 switch destination {

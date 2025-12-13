@@ -159,8 +159,8 @@ final class ARHuntEngine: ObservableObject {
     private var isFiring = false
     private var nextFireTime: CFTimeInterval = 0
     @Published var canCatch = false
-    @Published private(set) var ghostHealth: Int = 300
-    let ghostMaxHealth: Int = 300
+    @Published private(set) var ghostHealth: Int = 200
+    let ghostMaxHealth: Int = 200
     private var isCaptured = false
     private var hitFlashStart: CFTimeInterval?
     private let hitFlashDuration: CFTimeInterval = 1.0

@@ -134,27 +134,28 @@ final class ARHuntEngine: ObservableObject {
     private let ghostRoot = Entity()
     private var target: ModelEntity?
     private var modelLoadCancellable: AnyCancellable?
-    private var targetOriginalMaterials: [RealityKit.Material]?
     private var loadedModelKey: String?
     private var currentModelScale: Float = 0.12
     private var targetBaseScale: simd_float3 = [1, 1, 1]
     private var usingLoadedModel = false
     private var currentHitAnimationID: String?
+    private var animationHost: ModelEntity?
     private var availableAnimations: [AnimationResource] = []
+    private var originalMaterialsByEntity: [ObjectIdentifier: [RealityKit.Material]] = [:]
     private var displayLink: CADisplayLink?
     private var time: CFTimeInterval = 0
     private var isFrozen = false
     private var freezePosition: simd_float3?
+    private var freezeOrientation: simd_quatf?
     private var defaultMaterial: RealityKit.Material = SimpleMaterial(color: .cyan, isMetallic: true)
-    private var frozenMaterial: RealityKit.Material = SimpleMaterial(color: .red, isMetallic: true)
     private var projectiles: [Projectile] = []
     private let projectileRadius: Float = 0.022
     private let projectileBaseSpeed: Float = 1.0 // m/s
     private let projectileLifetime: Float = 7.0
     private let projectileMaxDistance: Float = 12.0
     private let projectileHitThreshold: Float = 0.22
-    private let projectileSteerStart: Float = 0.18
-    private let projectileSteerStrength: Float = 0.85
+    private let projectileSteerStart: Float = 0.12
+    private let projectileMaxTurnRate: Float = 1.4 // rad/sec (лёгкое самонаведение, не full homing)
     private var isFiring = false
     private var nextFireTime: CFTimeInterval = 0
     @Published var canCatch = false
@@ -325,7 +326,6 @@ final class ARHuntEngine: ObservableObject {
 
     private func setupTarget() {
         defaultMaterial = SimpleMaterial(color: .cyan, isMetallic: true)
-        frozenMaterial = SimpleMaterial(color: .red, isMetallic: true)
 
         let sphere = ModelEntity(mesh: .generateSphere(radius: 0.09), materials: [defaultMaterial])
         sphere.name = "target"
@@ -337,10 +337,11 @@ final class ARHuntEngine: ObservableObject {
 
         ghostRoot.addChild(sphere)
         target = sphere
-        targetOriginalMaterials = sphere.model?.materials
         targetBaseScale = sphere.scale
         usingLoadedModel = false
+        animationHost = nil
         availableAnimations = []
+        cacheOriginalMaterials()
         resetCombatState()
 
         updateGhostModel(modelID: nil)
@@ -432,12 +433,41 @@ final class ARHuntEngine: ObservableObject {
 
         ghostRoot.addChild(entity)
         target = entity
-        targetOriginalMaterials = entity.model?.materials
         targetBaseScale = entity.scale
         usingLoadedModel = true
-        availableAnimations = entity.availableAnimations
+        resolveAnimationHost()
+        cacheOriginalMaterials()
         resetCombatState()
         applyScale()
+    }
+
+    private func resolveAnimationHost() {
+        guard let target else {
+            animationHost = nil
+            availableAnimations = []
+            return
+        }
+
+        for model in collectModelEntities(from: target) {
+            if !model.availableAnimations.isEmpty {
+                animationHost = model
+                availableAnimations = model.availableAnimations
+                return
+            }
+        }
+
+        animationHost = nil
+        availableAnimations = []
+    }
+
+    private func cacheOriginalMaterials() {
+        originalMaterialsByEntity.removeAll()
+        guard let target else { return }
+        for model in collectModelEntities(from: target) {
+            if let materials = model.model?.materials {
+                originalMaterialsByEntity[ObjectIdentifier(model)] = materials
+            }
+        }
     }
 
     private func resetCombatState() {
@@ -446,6 +476,7 @@ final class ARHuntEngine: ObservableObject {
         isFrozen = false
         isCaptured = false
         freezePosition = nil
+        freezeOrientation = nil
         hitFlashStart = nil
         knockbackOffset = .zero
         knockbackVelocity = .zero
@@ -459,10 +490,10 @@ final class ARHuntEngine: ObservableObject {
     }
 
     private func playHitAnimationIfPossible() -> Bool {
-        guard let target else { return false }
+        guard let host = animationHost else { return false }
         guard !availableAnimations.isEmpty else { return false }
         guard let animation = resolveHitAnimation() else { return false }
-        target.playAnimation(animation, transitionDuration: 0.08, startsPaused: false)
+        host.playAnimation(animation, transitionDuration: 0.08, startsPaused: false)
         return true
     }
 
@@ -527,17 +558,6 @@ final class ARHuntEngine: ObservableObject {
         updateHitFlashIfNeeded()
 
         if isFrozen {
-            let base = freezePosition ?? target.position
-            let shakeAmp: Float = 0.02
-            let shakeFreq: Float = 28
-            let t = Float(time)
-            let jitter = SIMD3<Float>(
-                sin(t * shakeFreq) * shakeAmp,
-                cos(t * shakeFreq * 0.85) * shakeAmp * 0.5,
-                cos(t * shakeFreq * 1.07) * shakeAmp
-            )
-            target.position = base + jitter
-            target.scale = targetBaseScale * 1.12
             return
         }
 
@@ -564,7 +584,7 @@ final class ARHuntEngine: ObservableObject {
         knockbackVelocity -= knockbackVelocity * (knockbackDamping * delta)
         knockbackOffset += knockbackVelocity * delta
 
-        let maxOffset: Float = 3.2
+        let maxOffset: Float = 5.5
         let len = simd_length(knockbackOffset)
         if len > maxOffset, len > 0.0001 {
             knockbackOffset = (knockbackOffset / len) * maxOffset
@@ -576,15 +596,13 @@ final class ARHuntEngine: ObservableObject {
         guard let target, !isCaptured else { return }
         isFrozen = true
         freezePosition = target.position
+        freezeOrientation = target.orientation
         isFiring = false
         hitFlashStart = nil
-        let didPlayHit = playHitAnimationIfPossible()
-        if !didPlayHit, var model = target.model {
-            let count = max(model.materials.count, 1)
-            model.materials = Array(repeating: frozenMaterial, count: count)
-            target.model = model
-        }
-        target.scale = targetBaseScale * 1.12
+        restoreTargetMaterialsIfNeeded()
+        knockbackOffset = .zero
+        knockbackVelocity = .zero
+        _ = playHitAnimationIfPossible()
         canCatch = true
     }
 
@@ -605,7 +623,6 @@ final class ARHuntEngine: ObservableObject {
 
     private func updateHitFlashIfNeeded() {
         guard let target else { return }
-        guard !isFrozen else { return }
         guard let start = hitFlashStart else { return }
         let elapsed = time - start
         if elapsed >= hitFlashDuration {
@@ -614,40 +631,61 @@ final class ARHuntEngine: ObservableObject {
             return
         }
 
-        guard let originals = targetOriginalMaterials else { return }
         let p = Float(elapsed / hitFlashDuration)
         let w = sin(p * .pi) // 0 -> 1 -> 0
         let white = UIColor.white
 
-        var blended: [RealityKit.Material] = []
-        blended.reserveCapacity(originals.count)
-        for original in originals {
-            if var m = original as? SimpleMaterial {
-                let base = m.color.tint
-                m.color.tint = lerpColor(base, white, t: w)
-                blended.append(m)
-                continue
+        for modelEntity in collectModelEntities(from: target) {
+            guard let originals = originalMaterialsByEntity[ObjectIdentifier(modelEntity)] else { continue }
+            var blended: [RealityKit.Material] = []
+            blended.reserveCapacity(originals.count)
+            for original in originals {
+                if var m = original as? SimpleMaterial {
+                    m.color.tint = lerpColor(m.color.tint, white, t: w)
+                    blended.append(m)
+                    continue
+                }
+                if var m = original as? UnlitMaterial {
+                    m.color.tint = lerpColor(m.color.tint, white, t: w)
+                    blended.append(m)
+                    continue
+                }
+                if var m = original as? PhysicallyBasedMaterial {
+                    m.baseColor.tint = lerpColor(m.baseColor.tint, white, t: w)
+                    blended.append(m)
+                    continue
+                }
+                blended.append(UnlitMaterial(color: UIColor.white))
             }
-            if var m = original as? UnlitMaterial {
-                let base = m.color.tint
-                m.color.tint = lerpColor(base, white, t: w)
-                blended.append(m)
-                continue
-            }
-            blended.append(SimpleMaterial(color: white, isMetallic: false))
-        }
 
-        if var model = target.model {
-            model.materials = blended
-            target.model = model
+            if var model = modelEntity.model {
+                model.materials = blended
+                modelEntity.model = model
+            }
         }
     }
 
     private func restoreTargetMaterialsIfNeeded() {
-        guard let target, let originals = targetOriginalMaterials else { return }
-        guard var model = target.model else { return }
-        model.materials = originals
-        target.model = model
+        guard let target else { return }
+        for modelEntity in collectModelEntities(from: target) {
+            guard let originals = originalMaterialsByEntity[ObjectIdentifier(modelEntity)] else { continue }
+            guard var model = modelEntity.model else { continue }
+            model.materials = originals
+            modelEntity.model = model
+        }
+    }
+
+    private func collectModelEntities(from root: Entity) -> [ModelEntity] {
+        var result: [ModelEntity] = []
+        var queue: [Entity] = [root]
+        while let entity = queue.first {
+            queue.removeFirst()
+            if let model = entity as? ModelEntity {
+                result.append(model)
+            }
+            queue.append(contentsOf: entity.children)
+        }
+        return result
     }
 
     private func updateProjectiles(delta: Float) {
@@ -669,9 +707,19 @@ final class ARHuntEngine: ObservableObject {
                     let desiredDir = simd_normalize(toTarget)
                     let speed = simd_length(projectile.velocity)
                     let currentDir = simd_normalize(projectile.velocity)
-                    let t = min(max(projectileSteerStrength * delta, 0), 0.08)
-                    let newDir = simd_normalize(currentDir + (desiredDir - currentDir) * t)
-                    projectile.velocity = newDir * speed
+                    let dot = max(-1 as Float, min(1 as Float, simd_dot(currentDir, desiredDir)))
+                    let angle = acos(dot)
+                    if angle > 0.0001 {
+                        let maxTurn = projectileMaxTurnRate * delta
+                        let turn = min(angle, maxTurn)
+                        var axis = simd_cross(currentDir, desiredDir)
+                        if simd_length_squared(axis) > 1e-8 {
+                            axis = simd_normalize(axis)
+                            let rot = simd_quatf(angle: turn, axis: axis)
+                            let newDir = simd_normalize(rot.act(currentDir))
+                            projectile.velocity = newDir * speed
+                        }
+                    }
                 }
             }
 
@@ -709,8 +757,8 @@ final class ARHuntEngine: ObservableObject {
             dir = [Float.random(in: -1...1), 0, Float.random(in: -1...1)]
         }
         dir = simd_normalize(dir)
-        let distance = Float.random(in: 1.0...3.0)
-        let speed = min(distance / 0.18, 18) // m/s
+        let distance = Float.random(in: 1.0...5.0)
+        let speed = min(distance / 0.22, 22) // m/s
         knockbackVelocity += dir * speed
     }
 

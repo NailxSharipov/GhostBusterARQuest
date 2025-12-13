@@ -12,6 +12,7 @@ struct ContentView: View {
         GameListView()
             .environmentObject(GameStore())
             .environmentObject(UserLocationProvider())
+            .environmentObject(GhostModelStore())
     }
 }
 

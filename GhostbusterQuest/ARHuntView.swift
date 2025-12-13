@@ -15,6 +15,7 @@ import CoreLocation
 struct ARHuntView: View {
     @EnvironmentObject private var store: GameStore
     @EnvironmentObject private var locationProvider: UserLocationProvider
+    @EnvironmentObject private var modelStore: GhostModelStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var engine: ARHuntEngine
     private let ghostID: UUID?
@@ -29,7 +30,8 @@ struct ARHuntView: View {
             ARHuntContainer(
                 engine: engine,
                 ghostLocation: ghostLocation,
-                ghostModelID: ghostModelID,
+                ghostModelID: modelStore.settings.modelID,
+                ghostModelScale: modelStore.settings.scale,
                 userLocation: locationProvider.lastLocation,
                 heading: locationProvider.heading
             )
@@ -77,16 +79,6 @@ struct ARHuntView: View {
         return nil
     }
 
-    private var ghostModelID: String? {
-        guard let ghostID else { return nil }
-        for game in store.games {
-            if let ghost = game.ghosts.first(where: { $0.id == ghostID }) {
-                return ghost.modelID
-            }
-        }
-        return nil
-    }
-
     private func captureGhostAndExit() {
         if let id = ghostID {
             store.markCaptured(ghostID: id)
@@ -99,6 +91,7 @@ private struct ARHuntContainer: UIViewRepresentable {
     @ObservedObject var engine: ARHuntEngine
     let ghostLocation: CLLocationCoordinate2D?
     let ghostModelID: String?
+    let ghostModelScale: Double
     let userLocation: CLLocationCoordinate2D?
     let heading: CLHeading?
 
@@ -112,13 +105,13 @@ private struct ARHuntContainer: UIViewRepresentable {
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
         engine.attach(to: view)
-        engine.updateGhostModel(modelID: ghostModelID)
+        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale)
         engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
         return view
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
-        engine.updateGhostModel(modelID: ghostModelID)
+        engine.updateGhostModelSettings(modelID: ghostModelID, scale: ghostModelScale)
         engine.updateGhostPlacement(ghostLocation: ghostLocation, userLocation: userLocation, heading: heading)
     }
 }
@@ -134,6 +127,9 @@ final class ARHuntEngine: ObservableObject {
     private var modelLoadCancellable: AnyCancellable?
     private var targetOriginalMaterials: [RealityKit.Material]?
     private var loadedModelKey: String?
+    private var currentModelScale: Float = 0.12
+    private var targetBaseScale: simd_float3 = [1, 1, 1]
+    private var usingLoadedModel = false
     private var displayLink: CADisplayLink?
     private var time: CFTimeInterval = 0
     private var isFrozen = false
@@ -179,7 +175,16 @@ final class ARHuntEngine: ObservableObject {
         displayLink?.invalidate()
     }
 
-    func updateGhostModel(modelID: String?) {
+    func updateGhostModelSettings(modelID: String?, scale: Double) {
+        let newScale = Float(max(0.01, scale))
+        if abs(newScale - currentModelScale) > 0.0001 {
+            currentModelScale = newScale
+            applyScale()
+        }
+        updateGhostModel(modelID: modelID)
+    }
+
+    private func updateGhostModel(modelID: String?) {
         let key = ARHuntEngine.normalizedModelKey(modelID)
         guard loadedModelKey != key else { return }
         loadedModelKey = key
@@ -298,6 +303,8 @@ final class ARHuntEngine: ObservableObject {
         ghostRoot.addChild(sphere)
         target = sphere
         targetOriginalMaterials = sphere.model?.materials
+        targetBaseScale = sphere.scale
+        usingLoadedModel = false
 
         updateGhostModel(modelID: nil)
     }
@@ -375,7 +382,7 @@ final class ARHuntEngine: ObservableObject {
 
         entity.name = "target"
         entity.position = .zero
-        entity.scale = [0.12, 0.12, 0.12]
+        entity.scale = [currentModelScale, currentModelScale, currentModelScale]
         entity.physicsBody = PhysicsBodyComponent(mode: .kinematic)
 
         let bounds = entity.visualBounds(relativeTo: entity)
@@ -389,6 +396,16 @@ final class ARHuntEngine: ObservableObject {
         ghostRoot.addChild(entity)
         target = entity
         targetOriginalMaterials = entity.model?.materials
+        targetBaseScale = entity.scale
+        usingLoadedModel = true
+        applyScale()
+    }
+
+    private func applyScale() {
+        guard usingLoadedModel, let target else { return }
+        targetBaseScale = [currentModelScale, currentModelScale, currentModelScale]
+        let mult: Float = isFrozen ? 1.12 : 1.0
+        target.scale = targetBaseScale * mult
     }
 
     private static func horizontalForward(from transform: Transform) -> simd_float3 {
@@ -439,7 +456,7 @@ final class ARHuntEngine: ObservableObject {
                 cos(t * shakeFreq * 1.07) * shakeAmp
             )
             target.position = base + jitter
-            target.scale = [1.12, 1.12, 1.12]
+            target.scale = targetBaseScale * 1.12
             return
         }
 
@@ -462,7 +479,7 @@ final class ARHuntEngine: ObservableObject {
             model.materials = Array(repeating: frozenMaterial, count: count)
             target.model = model
         }
-        target.scale = [1.12, 1.12, 1.12]
+        target.scale = targetBaseScale * 1.12
         canCatch = true
     }
 

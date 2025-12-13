@@ -11,7 +11,7 @@ import MapKit
 struct GhostDetailView: View {
     @Binding var ghost: Ghost
     var onDelete: () -> Void
-    @EnvironmentObject private var store: GameStore
+    @EnvironmentObject private var modelStore: GhostModelStore
     @Environment(\.dismiss) private var dismiss
 
     private let mainRange: ClosedRange<Double> = 100...200
@@ -28,7 +28,30 @@ struct GhostDetailView: View {
         Form {
             Section("Параметры") {
                 TextField("Имя", text: $ghost.name)
-                TextField("Модель (asset id)", text: $ghost.modelID)
+            }
+
+            Section("Модель") {
+                if modelOptions.isEmpty {
+                    Text("Модели не найдены в бандле")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Файл", selection: $modelStore.settings.modelID) {
+                        ForEach(modelOptions, id: \.self) { id in
+                            Text(displayModelName(id))
+                                .tag(id)
+                        }
+                    }
+                }
+
+                NavigationLink {
+                    GhostModelSettingsView()
+                } label: {
+                    Label("Настроить модель", systemImage: "slider.horizontal.3")
+                }
+
+                Text("Настройки модели общие для всех призраков.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Базовая точка") {
@@ -92,6 +115,22 @@ struct GhostDetailView: View {
         }
     }
 
+    private var modelOptions: [String] {
+        let available = modelStore.availableModels
+        let selected = modelStore.settings.modelID
+        if available.isEmpty {
+            return selected.isEmpty ? [] : [selected]
+        }
+        if available.contains(selected) || selected.isEmpty {
+            return available
+        }
+        return [selected] + available
+    }
+
+    private func displayModelName(_ id: String) -> String {
+        id.split(separator: "/").last.map(String.init) ?? id
+    }
+
     private func moveGhost(translation: CGSize, center: CLLocationCoordinate2D, proxy: MapProxy) {
         guard let currentPoint = proxy.convert(center, to: .local) else { return }
         let translatedPoint = CGPoint(
@@ -127,5 +166,6 @@ struct GhostDetailView_Previews: PreviewProvider {
             GhostDetailView(ghost: $ghost, onDelete: {})
         }
         .environmentObject(store)
+        .environmentObject(GhostModelStore())
     }
 }

@@ -170,5 +170,6 @@ struct GameListView_Previews: PreviewProvider {
         GameListView()
             .environmentObject(GameStore())
             .environmentObject(UserLocationProvider())
+            .environmentObject(GhostModelStore())
     }
 }

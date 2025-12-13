@@ -11,12 +11,14 @@ import SwiftUI
 struct GhostbusterQuestApp: App {
     @StateObject private var store = GameStore()
     @StateObject private var locationProvider = UserLocationProvider()
+    @StateObject private var modelStore = GhostModelStore()
 
     var body: some Scene {
         WindowGroup {
             GameListView()
                 .environmentObject(store)
                 .environmentObject(locationProvider)
+                .environmentObject(modelStore)
         }
     }
 }

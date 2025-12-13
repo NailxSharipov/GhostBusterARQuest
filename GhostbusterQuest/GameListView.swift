@@ -17,8 +17,7 @@ enum GameNavigation: Hashable {
 struct GameListView: View {
     @EnvironmentObject private var store: GameStore
     @State private var path: [GameNavigation] = []
-    @State private var gameToDelete: UUID?
-    @State private var gameToReset: UUID?
+    @State private var pendingAlert: PendingGameAlert?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -27,9 +26,9 @@ struct GameListView: View {
                     NavigationLink(value: GameNavigation.game(game.id)) {
                         GameRowView(game: game)
                     }
-                    .swipeActions(edge: .trailing) {
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
-                            gameToDelete = game.id
+                            pendingAlert = .delete(game.id)
                         } label: {
                             Label("Удалить", systemImage: "trash")
                         }
@@ -43,7 +42,7 @@ struct GameListView: View {
                         .tint(.green)
 
                         Button {
-                            gameToReset = game.id
+                            pendingAlert = .reset(game.id)
                         } label: {
                             Label("Сброс", systemImage: "arrow.counterclockwise")
                         }
@@ -75,9 +74,15 @@ struct GameListView: View {
                             }
 
                             Button {
-                                gameToReset = activeGame.id
+                                pendingAlert = .reset(activeGame.id)
                             } label: {
                                 Label("Сброс прогресса", systemImage: "arrow.counterclockwise")
+                            }
+
+                            Button(role: .destructive) {
+                                pendingAlert = .delete(activeGame.id)
+                            } label: {
+                                Label("Удалить игру", systemImage: "trash")
                             }
 
                             Button(role: .destructive) {
@@ -91,39 +96,23 @@ struct GameListView: View {
                     }
                 }
             }
-            .alert("Удалить игру?", isPresented: Binding(get: {
-                gameToDelete != nil
-            }, set: { newValue in
-                if !newValue { gameToDelete = nil }
-            })) {
-                Button("Удалить", role: .destructive) {
-                    if let id = gameToDelete {
-                        delete(gameID: id)
-                    }
-                    gameToDelete = nil
+            .alert(item: $pendingAlert) { alert in
+                switch alert {
+                case .delete(let id):
+                    return Alert(
+                        title: Text("Удалить игру?"),
+                        message: Text("Все зоны и призраки будут удалены из сценария."),
+                        primaryButton: .destructive(Text("Удалить")) { delete(gameID: id) },
+                        secondaryButton: .cancel(Text("Отмена"))
+                    )
+                case .reset(let id):
+                    return Alert(
+                        title: Text("Сбросить прогресс?"),
+                        message: Text("Все призраки будут оживлены, и счёт пойманных будет обнулён."),
+                        primaryButton: .destructive(Text("Сбросить")) { store.resetProgress(for: id) },
+                        secondaryButton: .cancel(Text("Отмена"))
+                    )
                 }
-                Button("Отмена", role: .cancel) {
-                    gameToDelete = nil
-                }
-            } message: {
-                Text("Все зоны и призраки будут удалены из сценария.")
-            }
-            .alert("Сбросить прогресс?", isPresented: Binding(get: {
-                gameToReset != nil
-            }, set: { newValue in
-                if !newValue { gameToReset = nil }
-            })) {
-                Button("Сбросить", role: .destructive) {
-                    if let id = gameToReset {
-                        store.resetProgress(for: id)
-                    }
-                    gameToReset = nil
-                }
-                Button("Отмена", role: .cancel) {
-                    gameToReset = nil
-                }
-            } message: {
-                Text("Все призраки будут оживлены, и счёт пойманных будет обнулён.")
             }
             .navigationDestination(for: GameNavigation.self) { destination in
                 switch destination {
@@ -175,6 +164,20 @@ struct GameListView: View {
                 store.games[gameIndex].ghosts.remove(at: ghostIndex)
                 break
             }
+        }
+    }
+}
+
+private enum PendingGameAlert: Identifiable {
+    case delete(UUID)
+    case reset(UUID)
+
+    var id: String {
+        switch self {
+        case .delete(let id):
+            return "delete-\(id.uuidString)"
+        case .reset(let id):
+            return "reset-\(id.uuidString)"
         }
     }
 }
